@@ -6,7 +6,7 @@
  * @author      1412
  * @type        source
  * @apiLevel    1
- * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/apple-music-ttml.js
+ * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
  * @changelog   初始版本发布：支持图形化配置、媒体 Token 注入、歌词语言/音译脚本设置及自定义匹配别名库
  */
 
