@@ -30,7 +30,7 @@
 3. 复制 `media-user-token` 的值（格式通常为 `0.Avks...` 开头的字符串）。
 
 ### 3. 配置参数
-在 SPlayer-Next **「设置 → 插件 → AM TTML Fetch」** 卡片上点击 **【配置】** 按钮：
+在 SPlayer-Next **「设置 → 插件管理 → AM TTML Fetch」** 卡片上点击 **【配置】** 按钮：
 - **Media-User-Token**：粘贴上一步复制的 Token 字符串。
 - **账号曲库地区**：填入订阅账号所属地区（如 `cn`, `us`, `jp`，留空自动读取）。
 - **歌词翻译/语言 (l[lyrics])**：请求歌词语言（默认 `zh-Hans-CN`，推荐的还有 `zh-Hant-TW`）。
