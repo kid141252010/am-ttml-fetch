@@ -22,7 +22,7 @@
 ## 🛠️ 安装与使用
 
 ### 1. 安装插件
-在 SPlayer-Next 客户端中打开 **「设置 → 插件管理」**，点击 **【在线导入】** 并粘贴 [`https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/refs/heads/main/apple-music-ttml.js`](https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/refs/heads/main/apple-music-ttml.js) 以完成安装。
+在 SPlayer-Next 客户端中打开 **「设置 → 插件管理」**，点击 **【在线导入】** 并粘贴 [`https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/refs/heads/main/am-ttml-fetch.js`](https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/refs/heads/main/am-ttml-fetch.js) 以完成安装。
 
 ### 2. 获取 Media-User-Token
 1. 在浏览器中打开并登录 [Apple Music Web Player](https://music.apple.com)。
