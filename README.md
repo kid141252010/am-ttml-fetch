@@ -1,6 +1,7 @@
-# Apple Music TTML 逐字歌词插件 for SPlayer-Next
+# AM TTML Fetch 逐字歌词插件 for SPlayer-Next
 
 [![SPlayer-Next Plugin](https://img.shields.io/badge/SPlayer--Next-Plugin-blue.svg)](https://github.com/SPlayer-Dev/SPlayer-Next)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-v0.1.0-orange.svg)](apple-music-ttml.js)
 
 针对 [SPlayer-Next](https://github.com/SPlayer-Dev/SPlayer-Next) 播放器的音源与歌词拓展插件。搜索 Apple Music 全球曲库，提取 TTML 逐字/行级歌词（含内嵌翻译与音译），作为内置在线歌词源全 miss 时的强力兜底。
@@ -21,7 +22,7 @@
 ## 🛠️ 安装与使用
 
 ### 1. 安装插件
-下载仓库中的 `apple-music-ttml.js` 文件，在 SPlayer-Next 客户端中打开 **「设置 → 插件」**，点击 **【安装本地插件】** 并选择该文件。
+在 SPlayer-Next 客户端中打开 **「设置 → 插件」**，点击 **【安装在线插件】** 并粘贴 `https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/refs/heads/main/apple-music-ttml.js` 以完成安装。
 
 ### 2. 获取 Media-User-Token
 1. 在浏览器中打开并登录 [Apple Music Web Player](https://music.apple.com)。
@@ -38,6 +39,6 @@
 
 ---
 
-## 📄 开源协议与版权声明
+## 📄 开源协议与声明
 
-仅供技术交流与个人测试使用。
+本项目采用 [GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later)](LICENSE) 协议开源。仅供技术交流与个人测试使用。
