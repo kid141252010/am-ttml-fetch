@@ -25,15 +25,15 @@
 
 ### 2. 获取 Media-User-Token
 1. 在浏览器中打开并登录 [Apple Music Web Player](https://music.apple.com)。
-2. 按 `F12` 打开开发者工具，切换到 **应用 (Application) / 存储 (Storage) → Cookie → https://music.apple.com**。
+2. 按 `F12` 打开开发者工具，切换到 **应用 (Application) / 存储 (Storage) → Cookie → https://music.apple.com 。
 3. 复制 `media-user-token` 的值（格式通常为 `0.Avks...` 开头的字符串）。
 
 ### 3. 配置参数
-在 SPlayer-Next **「设置 → 插件 → Apple Music TTML」** 卡片上点击 **【配置】** 按钮：
+在 SPlayer-Next **「设置 → 插件 → AM TTML Fetch」** 卡片上点击 **【配置】** 按钮：
 - **Media-User-Token**：粘贴上一步复制的 Token 字符串。
 - **账号曲库地区**：填入订阅账号所属地区（如 `cn`, `us`, `jp`，留空自动读取）。
-- **歌词翻译/语言 (l[lyrics])**：请求歌词语言（默认 `zh-Hans-CN`）。
-- **歌词音译/脚本 (l[script])**：请求音译/字形脚本（如 `Japanese`, `Romaji`, `zh-Hans`，留空自动推导）。
+- **歌词翻译/语言 (l[lyrics])**：请求歌词语言（默认 `zh-Hans-CN`，推荐的还有 `zh-Hant-TW`）。
+- **歌词音译/脚本 (l[script])**：请求音译/字形脚本（如 `zh-Latn`, `ja-Kana`, `zh-Hans`，留空自动推导）。
 - **自定义匹配别名库**：格式为 `原词=别名`（如 `五月天=Mayday, 茄子蛋=EggPlantEgg`），提升外区检索匹配率。
 
 ---

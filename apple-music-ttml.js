@@ -1,5 +1,5 @@
 /**
- * @name        Apple Music TTML
+ * @name        AM TTML Fetch
  * @id          dev.splayer.am-ttml
  * @version     0.1.0
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译），作为内置歌词源全 miss 时的兜底
