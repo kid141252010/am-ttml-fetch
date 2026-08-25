@@ -1,0 +1,43 @@
+# Apple Music TTML 逐字歌词插件 for SPlayer-Next
+
+[![SPlayer-Next Plugin](https://img.shields.io/badge/SPlayer--Next-Plugin-blue.svg)](https://github.com/SPlayer-Dev/SPlayer-Next)
+[![Version](https://img.shields.io/badge/version-v0.1.0-orange.svg)](apple-music-ttml.js)
+
+针对 [SPlayer-Next](https://github.com/SPlayer-Dev/SPlayer-Next) 播放器的音源与歌词拓展插件。搜索 Apple Music 全球曲库，提取 TTML 逐字/行级歌词（含内嵌翻译与音译），作为内置在线歌词源全 miss 时的强力兜底。
+
+---
+
+## ✨ 核心特性
+
+- 🎵 **TTML 逐字/逐行歌词**：支持原生 syllable-level 逐字高亮动画与丰富样式。
+- 🌏 **全球曲库跨区检索**：支持同时在 `cn`、`jp`、`tw`、`kr` 等多个地区曲库发起并发搜索。
+- ⚙️ **图形化配置界面**：无需修改代码，在 SPlayer-Next「设置 → 插件 → Apple Music TTML → 配置」中直接填写参数。
+- 🔤 **歌词翻译与音译控制**：自定义 `l[lyrics]` 语言（如 `zh-Hans-CN`）与 `l[script]` 脚本（如 `Japanese`, `Romaji`）。
+- 🔀 **自定义匹配别名库**：支持配置 `五月天=Mayday` 等别名映射，方便外区曲库精准检索与盲匹打分。
+- 🔄 **支持在线自动更新**：内嵌规范 Header，SPlayer-Next 客户端在发现新版本时提示一键更新。
+
+---
+
+## 🛠️ 安装与使用
+
+### 1. 安装插件
+下载仓库中的 `apple-music-ttml.js` 文件，在 SPlayer-Next 客户端中打开 **「设置 → 插件」**，点击 **【安装本地插件】** 并选择该文件。
+
+### 2. 获取 Media-User-Token
+1. 在浏览器中打开并登录 [Apple Music Web Player](https://music.apple.com)。
+2. 按 `F12` 打开开发者工具，切换到 **应用 (Application) / 存储 (Storage) → Cookie → https://music.apple.com**。
+3. 复制 `media-user-token` 的值（格式通常为 `0.Avks...` 开头的字符串）。
+
+### 3. 配置参数
+在 SPlayer-Next **「设置 → 插件 → Apple Music TTML」** 卡片上点击 **【配置】** 按钮：
+- **Media-User-Token**：粘贴上一步复制的 Token 字符串。
+- **账号曲库地区**：填入订阅账号所属地区（如 `cn`, `us`, `jp`，留空自动读取）。
+- **歌词翻译/语言 (l[lyrics])**：请求歌词语言（默认 `zh-Hans-CN`）。
+- **歌词音译/脚本 (l[script])**：请求音译/字形脚本（如 `Japanese`, `Romaji`, `zh-Hans`，留空自动推导）。
+- **自定义匹配别名库**：格式为 `原词=别名`（如 `五月天=Mayday, 茄子蛋=EggPlantEgg`），提升外区检索匹配率。
+
+---
+
+## 📄 开源协议与版权声明
+
+仅供技术交流与个人测试使用。
