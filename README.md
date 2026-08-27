@@ -2,7 +2,7 @@
 
 [![SPlayer-Next Plugin](https://img.shields.io/badge/SPlayer--Next-Plugin-blue.svg)](https://github.com/SPlayer-Dev/SPlayer-Next)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v0.2.2-orange.svg)](am-ttml-fetch.js)
+[![Version](https://img.shields.io/badge/version-v0.2.3-orange.svg)](am-ttml-fetch.js)
 
 针对 [SPlayer-Next](https://github.com/SPlayer-Dev/SPlayer-Next) 播放器的音源与歌词拓展插件。搜索 Apple Music 全球曲库，提取 TTML 逐字/行级歌词（含内嵌翻译与音译），作为内置在线歌词源全 miss 时的强力兜底。
 
@@ -11,6 +11,7 @@
 ## ✨ 核心特性
 
 - 🎵 **TTML 逐字歌词提取**：支持原生 syllable-level 逐字高亮动画与丰富样式，自动过滤无逐字标记的普通逐行歌词。
+- 🇨🇳 **简体替换段无损融合**：自动将 Apple Music 内嵌的 `zh-Hans` 替换段（`type="replacement"`）合并进繁体主歌词，完美保留前置/后置背景歌词（`x-bg`）与逐字时间轴，并自动同步语言声明。
 - 🌏 **全球曲库跨区检索**：支持同时在 `cn`、`jp`、`tw`、`kr` 等多个地区曲库发起并发搜索。
 - ⚙️ **图形化配置界面**：无需修改代码，在 SPlayer-Next「设置 → 插件 → Apple Music TTML → 配置」中直接填写参数。
 - 🔤 **歌词翻译与音译控制**：自定义 `l[lyrics]` 语言（如 `zh-Hans-CN`）与 `l[script]` 脚本（如 `Japanese`, `Romaji`）。
