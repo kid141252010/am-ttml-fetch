@@ -1,13 +1,13 @@
 /**
  * @name        AM TTML Fetch
  * @id          dev.splayer.am-ttml-fetch
- * @version     0.2.0
+ * @version     0.2.1
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译），作为内置歌词源全 miss 时的兜底
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   修复多版本专辑中 Live 现场版抢占正式录音室专辑版导致取到逐行歌词的 Bug
+ * @changelog   繁化姬超时调整为 3 秒 (3000ms)，平衡长歌词转换耗时与响应速度
  */
 
 /* ========================= 常规默认配置 =========================
@@ -638,7 +638,7 @@ const fetchZhConvertOnce = async (text) => {
       text,
       converter: "Simplified",
     }),
-    timeout: 1500,
+    timeout: 3000,
   });
   const body = typeof resp?.body === "string" ? JSON.parse(resp.body) : resp?.body;
   if (body?.code === 0 && typeof body?.data?.text === "string") {
@@ -649,7 +649,7 @@ const fetchZhConvertOnce = async (text) => {
 
 /**
  * 使用繁化姬 API (https://api.zhconvert.org/) 将繁体文本转为简体中文
- * 策略：1.5 秒极速超时熔断；若网络缓慢或不可达则立即返回原文，绝不阻塞歌词显示
+ * 策略：3 秒超时熔断；若网络缓慢或不可达则立即返回原文，绝不阻塞歌词显示
  */
 const convertToZhHans = async (text) => {
   if (!text || typeof text !== "string") return { text, success: false };
@@ -657,7 +657,7 @@ const convertToZhHans = async (text) => {
   try {
     const fetchPromise = fetchZhConvertOnce(text);
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("繁化姬响应超过 1.5s 触发极速熔断")), 1500),
+      setTimeout(() => reject(new Error("繁化姬响应超过 3s 触发超时熔断")), 3000),
     );
 
     const convertedText = await Promise.race([fetchPromise, timeoutPromise]);
