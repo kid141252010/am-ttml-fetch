@@ -1,13 +1,13 @@
 /**
  * @name        AM TTML Fetch
  * @id          dev.splayer.am-ttml-fetch
- * @version     0.1.8
+ * @version     0.1.9
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译），作为内置歌词源全 miss 时的兜底
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   优化候选曲名与宿主标点精准对齐，解决全角括号/feat在宿主侧无法命中的问题
+ * @changelog   繁化姬简体化优化为 1.5 秒极速熔断，防止网络阻塞导致前端切歌超时取消
  */
 
 /* ========================= 常规默认配置 =========================
@@ -622,7 +622,7 @@ const fetchZhConvertOnce = async (text) => {
       text,
       converter: "Simplified",
     }),
-    timeout: 8000,
+    timeout: 1500,
   });
   const body = typeof resp?.body === "string" ? JSON.parse(resp.body) : resp?.body;
   if (body?.code === 0 && typeof body?.data?.text === "string") {
@@ -633,61 +633,22 @@ const fetchZhConvertOnce = async (text) => {
 
 /**
  * 使用繁化姬 API (https://api.zhconvert.org/) 将繁体文本转为简体中文
- * 策略：总超时 8s，若 4s 未响应则发起重试，任一请求成功即返回，超时则直接返回原文
+ * 策略：1.5 秒极速超时熔断；若网络缓慢或不可达则立即返回原文，绝不阻塞歌词显示
  */
 const convertToZhHans = async (text) => {
   if (!text || typeof text !== "string") return { text, success: false };
 
   try {
-    const result = await new Promise((resolve, reject) => {
-      let isDone = false;
-      let retryTimer = null;
-      let totalTimer = null;
+    const fetchPromise = fetchZhConvertOnce(text);
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("繁化姬响应超过 1.5s 触发极速熔断")), 1500),
+    );
 
-      const finishSuccess = (convertedText) => {
-        if (isDone) return;
-        isDone = true;
-        clearTimeout(retryTimer);
-        clearTimeout(totalTimer);
-        resolve(convertedText);
-      };
-
-      const finishFail = (err) => {
-        if (isDone) return;
-        isDone = true;
-        clearTimeout(retryTimer);
-        clearTimeout(totalTimer);
-        reject(err);
-      };
-
-      // 8秒总超时
-      totalTimer = setTimeout(() => {
-        finishFail(new Error("繁化姬请求总超时 (8000ms)"));
-      }, 8000);
-
-      // 第 1 次尝试
-      fetchZhConvertOnce(text)
-        .then(finishSuccess)
-        .catch((err) => {
-          splayer.log.warn("繁化姬第 1 次请求异常:", err?.message);
-        });
-
-      // 4 秒未完成则发起第 2 次重试
-      retryTimer = setTimeout(() => {
-        if (isDone) return;
-        splayer.log.info("繁化姬 4s 未返回，发起第 2 次重试请求");
-        fetchZhConvertOnce(text)
-          .then(finishSuccess)
-          .catch((err) => {
-            splayer.log.warn("繁化姬重试请求异常:", err?.message);
-          });
-      }, 4000);
-    });
-
+    const convertedText = await Promise.race([fetchPromise, timeoutPromise]);
     splayer.log.info("繁化姬简体化转换成功");
-    return { text: result, success: true };
+    return { text: convertedText, success: true };
   } catch (err) {
-    splayer.log.warn("繁化姬简体化转换失败/超时，直接返回原文兜底:", err?.message);
+    splayer.log.warn("繁化姬简体化转换超时/不可达，直接返回原版歌词:", err?.message);
   }
 
   return { text, success: false };
