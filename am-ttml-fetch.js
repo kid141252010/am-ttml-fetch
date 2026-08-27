@@ -1,13 +1,13 @@
 /**
  * @name        AM TTML Fetch
  * @id          dev.splayer.am-ttml-fetch
- * @version     0.1.7
+ * @version     0.1.8
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译），作为内置歌词源全 miss 时的兜底
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   修复带有翻译段的逐字 TTML 因翻译头 timing=None 被误判为逐行丢弃的 Bug
+ * @changelog   优化候选曲名与宿主标点精准对齐，解决全角括号/feat在宿主侧无法命中的问题
  */
 
 /* ========================= 常规默认配置 =========================
@@ -508,16 +508,27 @@ splayer.on("musicSearch", async ({ keyword }) => {
       }
     }
 
-    // 智能曲名对齐：若原搜索关键词带有 feat 合作信息，但 Apple Music 候选曲名为纯曲名
-    // 将候选名称附带上该后缀，使宿主比对时达成全等匹配（避免触发宿主 0.34 长度占比门槛拦截）
+    // 智能曲名对齐：当候选的核心歌名与关键词的核心歌名吻合时，
+    // 精准将候选名称对齐为搜索关键词中的曲名格式（完全保持与宿主一致的全角括号、feat 等标点写法），
+    // 彻底解决宿主由于未过滤全角括号（）和中括号[]导致比对失败的致命问题！
     let name = item.name;
-    const featMatches = keyword.match(FEAT_PATTERN);
-    if (featMatches && featMatches[0]) {
-      const featStr = featMatches[0];
-      const flatCleanKw = normalize(cleanKeyword);
-      const flatCand = normalize(item.name);
-      if (flatCleanKw.startsWith(flatCand) && !item.name.toLowerCase().includes("feat")) {
-        name = `${item.name} ${featStr}`;
+    const cleanCand = normalize(stripFeat(item.name));
+    const cleanKw = normalize(stripFeat(keyword));
+    if (cleanCand && (cleanKw.startsWith(cleanCand) || cleanCand.startsWith(cleanKw))) {
+      const featMatches = keyword.match(FEAT_PATTERN);
+      if (featMatches && featMatches[0]) {
+        const featIdx = keyword.indexOf(featMatches[0]);
+        name = keyword.slice(0, featIdx + featMatches[0].length).trim();
+      } else {
+        // 无 feat 时，从关键词中剥离歌手，保留与宿主完全一致的歌名原文字符
+        let rawTitle = keyword.trim();
+        for (const artist of singer.split("/")) {
+          const trimmed = artist.trim();
+          if (trimmed && rawTitle.toLowerCase().endsWith(trimmed.toLowerCase())) {
+            rawTitle = rawTitle.slice(0, -trimmed.length).trim();
+          }
+        }
+        if (rawTitle) name = rawTitle;
       }
     }
 
