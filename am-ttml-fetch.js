@@ -1,13 +1,13 @@
 /**
  * @name        AM TTML Fetch
  * @id          dev.splayer.am-ttml-fetch
- * @version     0.1.9
+ * @version     0.2.0
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译），作为内置歌词源全 miss 时的兜底
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   繁化姬简体化优化为 1.5 秒极速熔断，防止网络阻塞导致前端切歌超时取消
+ * @changelog   修复多版本专辑中 Live 现场版抢占正式录音室专辑版导致取到逐行歌词的 Bug
  */
 
 /* ========================= 常规默认配置 =========================
@@ -410,6 +410,7 @@ const searchStorefront = async (storefront, keyword, mediaUserToken) => {
       durationMs: attrs.durationInMillis,
       storefront,
       isrc: attrs.isrc ?? "",
+      hasTimeSyncedLyrics: Boolean(attrs.hasTimeSyncedLyrics),
     });
   }
   return list;
@@ -534,6 +535,21 @@ splayer.on("musicSearch", async ({ keyword }) => {
 
     list.push({ ...item, name, singer });
   }
+
+  // 关键排序：非 Live 关键词下，优先录音室专辑正式版排在前面，防止被 Live 现场版（通常为逐行歌词）抢占
+  const isKeywordLive = /\blive\b/i.test(keyword);
+  list.sort((a, b) => {
+    const aIsLive = /\blive\b/i.test(a.name) || /\blive\b/i.test(a.album);
+    const bIsLive = /\blive\b/i.test(b.name) || /\blive\b/i.test(b.album);
+    if (!isKeywordLive && aIsLive !== bIsLive) {
+      return aIsLive ? 1 : -1;
+    }
+    if (a.hasTimeSyncedLyrics !== b.hasTimeSyncedLyrics) {
+      return b.hasTimeSyncedLyrics ? 1 : -1;
+    }
+    return 0;
+  });
+
   return { list };
 });
 
