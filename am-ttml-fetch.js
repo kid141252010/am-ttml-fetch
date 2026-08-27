@@ -1,13 +1,13 @@
 /**
  * @name        AM TTML Fetch
  * @id          dev.splayer.am-ttml-fetch
- * @version     0.1.5
+ * @version     0.1.6
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译），作为内置歌词源全 miss 时的兜底
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   繁化姬转换优化：8s 总超时熔断，并在 4s 未响应时发起重试请求
+ * @changelog   优化合作曲目 (feat/with) 搜索词派生、标点归一化及候选曲名智能对齐
  */
 
 /* ========================= 常规默认配置 =========================
@@ -345,11 +345,17 @@ const getMatchLevel = () => {
   return MATCH_LEVELS[levelKey] ?? MATCH_LEVELS.standard;
 };
 
-/** 与宿主 normalize 对齐，用于比对曲名并从关键词里剥出歌手 */
+/** 与宿主 normalize 对齐，用于比对曲名并从关键词里剥出歌手（强化标点、全角符号与省略号） */
 const normalize = (text) =>
   String(text ?? "")
     .toLowerCase()
-    .replace(/[、&;，,/|()·・\s\-_'"`~!?？！.。]+/g, "");
+    .replace(/[、&;，,/|()（）\[\]【】{}《》·・\s\-_'"`~!?？！.。…\^]+/g, "");
+
+/** 合作伴唱后缀正则（如 (feat. xxx), （feat. xxx）, [with xxx] 等） */
+const FEAT_PATTERN = /[\(\（\[\【](?:feat|ft|featuring|with)\b[^\)\）\]\】]*[\)\）\]\】]/gi;
+
+/** 剥离曲名或关键词中的 feat / with 等伴唱后缀 */
+const stripFeat = (text) => String(text ?? "").replace(FEAT_PATTERN, "").trim();
 
 /**
  * 从搜索关键词里剥出歌手部分
@@ -362,7 +368,8 @@ const normalize = (text) =>
  */
 const deriveArtistAlias = (keyword, candidateName, mode) => {
   if (mode === "off") return "";
-  const flatKeyword = normalize(keyword);
+  const cleanKw = stripFeat(keyword);
+  const flatKeyword = normalize(cleanKw);
   const flatName = normalize(candidateName);
   if (!flatName) return "";
 
@@ -418,15 +425,24 @@ splayer.on("musicSearch", async ({ keyword }) => {
   const storefronts = getSearchStorefronts(accountStorefront);
   const aliasEntries = getCustomAliasEntries();
 
-  // 若关键词命中了自定义别名映射（如 "五月天" -> "Mayday"），自动追加衍生词并发搜索
+  // 1. 基础词与剥离 feat 伴唱后的派生词
   const searchKeywords = [keyword];
-  for (const entry of aliasEntries) {
-    if (keyword.toLowerCase().includes(entry.raw.toLowerCase())) {
-      const expanded = keyword.replace(new RegExp(entry.raw, "gi"), entry.alias);
-      if (!searchKeywords.includes(expanded)) searchKeywords.push(expanded);
-    } else if (keyword.toLowerCase().includes(entry.alias.toLowerCase())) {
-      const expanded = keyword.replace(new RegExp(entry.alias, "gi"), entry.raw);
-      if (!searchKeywords.includes(expanded)) searchKeywords.push(expanded);
+  const cleanKeyword = stripFeat(keyword);
+  if (cleanKeyword && cleanKeyword !== keyword && !searchKeywords.includes(cleanKeyword)) {
+    searchKeywords.push(cleanKeyword);
+  }
+
+  // 2. 若关键词命中了自定义别名映射（如 "五月天" -> "Mayday"），自动追加衍生词并发搜索
+  const currentKeywords = [...searchKeywords];
+  for (const kw of currentKeywords) {
+    for (const entry of aliasEntries) {
+      if (kw.toLowerCase().includes(entry.raw.toLowerCase())) {
+        const expanded = kw.replace(new RegExp(entry.raw, "gi"), entry.alias);
+        if (!searchKeywords.includes(expanded)) searchKeywords.push(expanded);
+      } else if (kw.toLowerCase().includes(entry.alias.toLowerCase())) {
+        const expanded = kw.replace(new RegExp(entry.alias, "gi"), entry.raw);
+        if (!searchKeywords.includes(expanded)) searchKeywords.push(expanded);
+      }
     }
   }
 
@@ -445,7 +461,7 @@ splayer.on("musicSearch", async ({ keyword }) => {
   const groups = await Promise.all(searchTasks);
   const all = groups.flat();
   const accountItems = all.filter((item) => item.storefront === accountStorefront);
-  const flatKeyword = normalize(keyword);
+  const flatKeyword = normalize(cleanKeyword || keyword);
 
   // 同一 catalog id 在各曲库是同一录音、仅曲名本地化不同；按 id 合并，
   // 取「曲名恰为宿主关键词前缀」的那份，宿主的曲名门槛才过得去
@@ -473,11 +489,13 @@ splayer.on("musicSearch", async ({ keyword }) => {
       const twin = accountItems.find((cand) => sameRecording(cand.durationMs, item.durationMs));
       if (twin) item.accountId = twin.id;
     }
+
     const alias = deriveArtistAlias(keyword, item.name, level.alias);
     let singer = item.singer;
     if (alias) {
       singer = `${singer}/${alias}`;
     }
+
     // 根据自定义别名映射表（如 五月天=Mayday），自动双向补全别名
     for (const entry of aliasEntries) {
       const normSinger = normalize(singer);
@@ -489,7 +507,21 @@ splayer.on("musicSearch", async ({ keyword }) => {
         singer = `${singer}/${entry.raw}`;
       }
     }
-    list.push({ ...item, singer });
+
+    // 智能曲名对齐：若原搜索关键词带有 feat 合作信息，但 Apple Music 候选曲名为纯曲名
+    // 将候选名称附带上该后缀，使宿主比对时达成全等匹配（避免触发宿主 0.34 长度占比门槛拦截）
+    let name = item.name;
+    const featMatches = keyword.match(FEAT_PATTERN);
+    if (featMatches && featMatches[0]) {
+      const featStr = featMatches[0];
+      const flatCleanKw = normalize(cleanKeyword);
+      const flatCand = normalize(item.name);
+      if (flatCleanKw.startsWith(flatCand) && !item.name.toLowerCase().includes("feat")) {
+        name = `${item.name} ${featStr}`;
+      }
+    }
+
+    list.push({ ...item, name, singer });
   }
   return { list };
 });
