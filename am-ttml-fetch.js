@@ -1,13 +1,13 @@
 /**
  * @name        AM TTML Fetch
  * @id          dev.splayer.am-ttml-fetch
- * @version     0.1.6
+ * @version     0.1.7
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译），作为内置歌词源全 miss 时的兜底
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   优化合作曲目 (feat/with) 搜索词派生、标点归一化及候选曲名智能对齐
+ * @changelog   修复带有翻译段的逐字 TTML 因翻译头 timing=None 被误判为逐行丢弃的 Bug
  */
 
 /* ========================= 常规默认配置 =========================
@@ -713,13 +713,12 @@ const processTTMLSimplified = async (ttml) => {
 
 /**
  * 校验 TTML 是否为逐字歌词（Syllable-level）：
- * 1. 若标头显式声明 itunes:timing="Line" 或 "None"，则不是逐字
- * 2. 必须包含带有 begin / end 时间戳的 <span> 逐字标签
+ * 只要主歌词中包含带有 begin 时间戳的 <span> 标签即为逐字歌词。
+ * （注意：不能全局检查 itunes:timing="None"，因为内嵌的翻译段通常被 Apple 标记为 None）
  */
 const isSyllableTTML = (ttml) => {
   if (!ttml || typeof ttml !== "string") return false;
-  if (/itunes:timing=["'](Line|None)["']/i.test(ttml)) return false;
-  return /<span\b[^>]*\b(begin|end|dur)\s*=/i.test(ttml);
+  return /<span\b[^>]*\b(begin|end)\s*=/i.test(ttml);
 };
 
 /** 写入歌词缓存，按写入顺序淘汰最旧条目 */
