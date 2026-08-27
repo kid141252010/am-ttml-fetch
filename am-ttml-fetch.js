@@ -1,13 +1,13 @@
 /**
  * @name        AM TTML Fetch
  * @id          dev.splayer.am-ttml-fetch
- * @version     0.2.1
+ * @version     0.2.2
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译），作为内置歌词源全 miss 时的兜底
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   繁化姬超时调整为 3 秒 (3000ms)，平衡长歌词转换耗时与响应速度
+ * @changelog   移除繁简转换与简体替换段过滤逻辑，TTML 原样返回宿主，不再依赖第三方 API
  */
 
 /* ========================= 常规默认配置 =========================
@@ -606,100 +606,6 @@ const pickTTML = (body) => {
 };
 
 /**
- * 预处理 TTML：
- * 若翻译段标头包含 type="replacement" 且 xml:lang 包含 zh-Hans（简体中文替换型翻译），
- * 直接丢弃整块 <translation>...</translation> 完整翻译。
- */
-const filterReplacementZhHansTranslation = (ttml) => {
-  if (!ttml || typeof ttml !== "string") return ttml;
-  return ttml
-    .replace(/<translation\b[\s\S]*?<\/translation>/gi, (block) => {
-      const isReplacement = /\btype=["']replacement["']/i.test(block);
-      const isZhHans = /\bxml:lang=["']zh-Hans/i.test(block);
-      if (isReplacement && isZhHans) {
-        splayer.log.info("检测到 type=replacement 且 xml:lang=zh-Hans 标头，直接丢弃完整翻译");
-        return "";
-      }
-      return block;
-    })
-    .replace(/<translation\b[^>]*\/>/gi, (tag) => {
-      const isReplacement = /\btype=["']replacement["']/i.test(tag);
-      const isZhHans = /\bxml:lang=["']zh-Hans/i.test(tag);
-      return isReplacement && isZhHans ? "" : tag;
-    });
-};
-
-/** 单次请求繁化姬转换接口 */
-const fetchZhConvertOnce = async (text) => {
-  const resp = await splayer.request("https://api.zhconvert.org/convert", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      text,
-      converter: "Simplified",
-    }),
-    timeout: 3000,
-  });
-  const body = typeof resp?.body === "string" ? JSON.parse(resp.body) : resp?.body;
-  if (body?.code === 0 && typeof body?.data?.text === "string") {
-    return body.data.text;
-  }
-  throw new Error(body?.msg || `状态码异常: ${resp?.status}`);
-};
-
-/**
- * 使用繁化姬 API (https://api.zhconvert.org/) 将繁体文本转为简体中文
- * 策略：3 秒超时熔断；若网络缓慢或不可达则立即返回原文，绝不阻塞歌词显示
- */
-const convertToZhHans = async (text) => {
-  if (!text || typeof text !== "string") return { text, success: false };
-
-  try {
-    const fetchPromise = fetchZhConvertOnce(text);
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("繁化姬响应超过 3s 触发超时熔断")), 3000),
-    );
-
-    const convertedText = await Promise.race([fetchPromise, timeoutPromise]);
-    splayer.log.info("繁化姬简体化转换成功");
-    return { text: convertedText, success: true };
-  } catch (err) {
-    splayer.log.warn("繁化姬简体化转换超时/不可达，直接返回原版歌词:", err?.message);
-  }
-
-  return { text, success: false };
-};
-
-/**
- * 预处理 TTML：
- * 1. 若翻译段标头包含 type="replacement" 且 xml:lang 包含 zh-Hans（简体中文替换型翻译），直接丢弃整块 <translation>...</translation> 完整翻译。
- * 2. 若 XML 的语言声明包含 zh-Hant 前缀（如 zh-Hant, zh-Hant-TW, zh-Hant-HK），调用繁化姬 API (8s 总超时/4s 重试) 转换为简体中文；转换成功则更新 xml:lang 为 zh-Hans，失败/超时则直接兜底返回原文。
- */
-const processTTMLSimplified = async (ttml) => {
-  if (!ttml || typeof ttml !== "string") return ttml;
-
-  // 1. 照旧丢弃 zh-Hans 的 replacement 翻译段
-  let processed = filterReplacementZhHansTranslation(ttml);
-
-  // 2. 检测 XML 声明中是否含有 zh-Hant 前缀（如 zh-Hant, zh-Hant-TW, zh-Hant-HK 等）
-  const hasZhHant = /\bxml:lang=["']zh-Hant([-_][a-zA-Z0-9]+)?["']/i.test(processed);
-  if (hasZhHant) {
-    splayer.log.info("检测到 zh-Hant 语言声明，调用繁化姬 API 进行简体化转换 (8s 超时 / 4s 重试)");
-    const { text: converted, success } = await convertToZhHans(processed);
-    processed = converted;
-    // 仅在繁化姬成功转换后才将语言声明改为 zh-Hans，超时/失败保留原声明
-    if (success) {
-      processed = processed.replace(
-        /\bxml:lang=["']zh-Hant([-_][a-zA-Z0-9]+)?["']/gi,
-        'xml:lang="zh-Hans"',
-      );
-    }
-  }
-
-  return processed;
-};
-
-/**
  * 校验 TTML 是否为逐字歌词（Syllable-level）：
  * 只要主歌词中包含带有 begin 时间戳的 <span> 标签即为逐字歌词。
  * （注意：不能全局检查 itunes:timing="None"，因为内嵌的翻译段通常被 Apple 标记为 None）
@@ -779,7 +685,6 @@ splayer.on("musicLyric", async ({ musicInfo }) => {
 
   let ttml = pickTTML(resp.body);
   if (!ttml) return { lyric: "" };
-  ttml = await processTTMLSimplified(ttml);
   if (!ttml.trim()) return { lyric: "" };
 
   // 2. 严格校验 TTML 内容是否具备逐字 span 时间戳
