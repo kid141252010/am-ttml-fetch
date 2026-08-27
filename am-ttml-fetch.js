@@ -1,13 +1,13 @@
 /**
  * @name        AM TTML Fetch
  * @id          dev.splayer.am-ttml-fetch
- * @version     0.1.1
+ * @version     0.1.2
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译），作为内置歌词源全 miss 时的兜底
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   过滤 displayType=2 的逐行歌词，仅保留逐字歌词
+ * @changelog   全面过滤逐行歌词：拦截 displayType=2、移除 /lyrics 降级、过滤旧逐行缓存及 XML 结构校验
  */
 
 /* ========================= 常规默认配置 =========================
@@ -570,6 +570,17 @@ const filterReplacementZhHansTranslation = (ttml) => {
     });
 };
 
+/**
+ * 校验 TTML 是否为逐字歌词（Syllable-level）：
+ * 1. 若标头显式声明 itunes:timing="Line" 或 "None"，则不是逐字
+ * 2. 必须包含带有 begin / end 时间戳的 <span> 逐字标签
+ */
+const isSyllableTTML = (ttml) => {
+  if (!ttml || typeof ttml !== "string") return false;
+  if (/itunes:timing=["'](Line|None)["']/i.test(ttml)) return false;
+  return /<span\b[^>]*\b(begin|end|dur)\s*=/i.test(ttml);
+};
+
 /** 写入歌词缓存，按写入顺序淘汰最旧条目 */
 const cacheLyric = async (key, ttml) => {
   const index = (await splayer.storage.get("lyricIndex")) ?? [];
@@ -609,15 +620,18 @@ splayer.on("musicLyric", async ({ musicInfo }) => {
   const script = getSettingOrConst("translationScript", TRANSLATION_SCRIPT);
   const cacheKey = `lyric:${accountStorefront}:${songId}:${lang}:${script}`;
   const cached = await splayer.storage.get(cacheKey);
-  if (cached) return { lyric: cached, awlyric: cached };
+  if (cached) {
+    if (isSyllableTTML(cached)) {
+      return { lyric: cached, awlyric: cached };
+    }
+    // 缓存中若是旧的逐行歌词，清除旧缓存
+    await splayer.storage.remove(cacheKey);
+  }
 
-  // 逐字接口取不到时退到行级歌词，两者都是 TTML，宿主解析路径一致
+  // 仅请求逐字歌词接口；不请求/降级到纯逐行的 /lyrics 接口
   const suffix = buildLyricQuery(lang, script);
   const base = `/catalog/${accountStorefront}/songs/${songId}`;
-  let resp = await ampRequestWithRetry(`${base}/syllable-lyrics${suffix}`, mediaUserToken);
-  if (resp.status === 404) {
-    resp = await ampRequestWithRetry(`${base}/lyrics${suffix}`, mediaUserToken);
-  }
+  const resp = await ampRequestWithRetry(`${base}/syllable-lyrics${suffix}`, mediaUserToken);
   if (resp.status === 403) {
     throw new Error("Media-User-Token 无效或已过期，请在插件设置里重新填写");
   }
@@ -629,7 +643,7 @@ splayer.on("musicLyric", async ({ musicInfo }) => {
   const attrs = resp.body?.data?.[0]?.attributes;
   if (!attrs) return { lyric: "" };
 
-  // displayType 为 2 表示普通逐行歌词，丢弃不传给 SPlayer
+  // 1. 如果 displayType 是 2（或者不是 1），判定为普通逐行歌词，丢弃
   if (attrs.displayType === 2 || String(attrs.displayType) === "2") {
     splayer.log.info(`歌词为逐行类型 (displayType=2)，丢弃不传给宿主 id=${songId}`);
     return { lyric: "" };
@@ -639,6 +653,12 @@ splayer.on("musicLyric", async ({ musicInfo }) => {
   if (!ttml) return { lyric: "" };
   ttml = filterReplacementZhHansTranslation(ttml);
   if (!ttml.trim()) return { lyric: "" };
+
+  // 2. 严格校验 TTML 内容是否具备逐字 span 时间戳
+  if (!isSyllableTTML(ttml)) {
+    splayer.log.info(`TTML 内容为逐行歌词（无逐字 span 标记），丢弃不传给宿主 id=${songId}`);
+    return { lyric: "" };
+  }
 
   await cacheLyric(cacheKey, ttml);
   // lyric 非空是宿主采纳的门槛，awlyric 让宿主走逐字解析
