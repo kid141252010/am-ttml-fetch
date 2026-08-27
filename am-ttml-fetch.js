@@ -1,13 +1,13 @@
 /**
  * @name        AM TTML Fetch
  * @id          dev.splayer.am-ttml-fetch
- * @version     0.1.0
+ * @version     0.1.1
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译），作为内置歌词源全 miss 时的兜底
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   初始版本发布：支持图形化配置、媒体 Token 注入、歌词语言/音译脚本设置及自定义匹配别名库
+ * @changelog   过滤 displayType=2 的逐行歌词，仅保留逐字歌词
  */
 
 /* ========================= 常规默认配置 =========================
@@ -623,6 +623,15 @@ splayer.on("musicLyric", async ({ musicInfo }) => {
   }
   if (resp.status !== 200) {
     splayer.log.warn(`歌词请求失败 HTTP ${resp.status} id=${songId} sf=${accountStorefront}`);
+    return { lyric: "" };
+  }
+
+  const attrs = resp.body?.data?.[0]?.attributes;
+  if (!attrs) return { lyric: "" };
+
+  // displayType 为 2 表示普通逐行歌词，丢弃不传给 SPlayer
+  if (attrs.displayType === 2 || String(attrs.displayType) === "2") {
+    splayer.log.info(`歌词为逐行类型 (displayType=2)，丢弃不传给宿主 id=${songId}`);
     return { lyric: "" };
   }
 
