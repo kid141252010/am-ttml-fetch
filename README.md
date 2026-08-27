@@ -2,7 +2,7 @@
 
 [![SPlayer-Next Plugin](https://img.shields.io/badge/SPlayer--Next-Plugin-blue.svg)](https://github.com/SPlayer-Dev/SPlayer-Next)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v0.1.2-orange.svg)](am-ttml-fetch.js)
+[![Version](https://img.shields.io/badge/version-v0.1.3-orange.svg)](am-ttml-fetch.js)
 
 针对 [SPlayer-Next](https://github.com/SPlayer-Dev/SPlayer-Next) 播放器的音源与歌词拓展插件。搜索 Apple Music 全球曲库，提取 TTML 逐字/行级歌词（含内嵌翻译与音译），作为内置在线歌词源全 miss 时的强力兜底。
 
@@ -10,7 +10,8 @@
 
 ## ✨ 核心特性
 
-- 🎵 **TTML 逐字/逐行歌词**：支持原生 syllable-level 逐字高亮动画与丰富样式。
+- 🎵 **TTML 逐字歌词提取**：支持原生 syllable-level 逐字高亮动画与丰富样式，自动过滤无逐字标记的普通逐行歌词。
+- 🇨🇳 **智能简体中文转换**：当获取到包含 `zh-Hant` 前缀（含 `TW`/`HK` 等地区）的繁体歌词时，自动对接 [繁化姬 API](https://zhconvert.org) 高精度转为简体中文并规范 `xml:lang="zh-Hans"`。
 - 🌏 **全球曲库跨区检索**：支持同时在 `cn`、`jp`、`tw`、`kr` 等多个地区曲库发起并发搜索。
 - ⚙️ **图形化配置界面**：无需修改代码，在 SPlayer-Next「设置 → 插件 → Apple Music TTML → 配置」中直接填写参数。
 - 🔤 **歌词翻译与音译控制**：自定义 `l[lyrics]` 语言（如 `zh-Hans-CN`）与 `l[script]` 脚本（如 `Japanese`, `Romaji`）。
@@ -26,7 +27,7 @@
 
 ### 2. 获取 Media-User-Token
 1. 在浏览器中打开并登录 [Apple Music Web Player](https://music.apple.com)。
-2. 按 `F12` 打开开发者工具，切换到 **应用 (Application) / 存储 (Storage) → Cookie → https://music.apple.com 。
+2. 按 `F12` 打开开发者工具，切换到 **应用 (Application) / 存储 (Storage) → Cookie → https://music.apple.com**。
 3. 复制 `media-user-token` 的值（格式通常为 `0.Avks...` 开头的字符串）。
 
 ### 3. 配置参数
@@ -41,4 +42,5 @@
 
 ## 📄 开源协议与声明
 
-本项目采用 [GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later)](LICENSE) 协议开源。仅供技术交流与个人测试使用。
+- 本项目采用 [GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later)](LICENSE) 协议开源。仅供技术交流与个人测试使用。
+- 本插件使用了 [繁化姬](https://zhconvert.org) 提供的开放 API 服务进行繁简中文转换。繁化姬商用必须付费。

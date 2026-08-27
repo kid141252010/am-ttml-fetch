@@ -1,13 +1,13 @@
 /**
  * @name        AM TTML Fetch
  * @id          dev.splayer.am-ttml-fetch
- * @version     0.1.2
+ * @version     0.1.3
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译），作为内置歌词源全 miss 时的兜底
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   全面过滤逐行歌词：拦截 displayType=2、移除 /lyrics 降级、过滤旧逐行缓存及 XML 结构校验
+ * @changelog   繁体歌词支持通过繁化姬在线 API 自动转为简体中文并规范 xml:lang 声明
  */
 
 /* ========================= 常规默认配置 =========================
@@ -571,6 +571,57 @@ const filterReplacementZhHansTranslation = (ttml) => {
 };
 
 /**
+ * 使用繁化姬 API (https://api.zhconvert.org/) 将繁体文本转为简体中文
+ */
+const convertToZhHans = async (text) => {
+  if (!text || typeof text !== "string") return text;
+  try {
+    const resp = await splayer.request("https://api.zhconvert.org/convert", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        converter: "Simplified",
+      }),
+    });
+    const body = typeof resp.body === "string" ? JSON.parse(resp.body) : resp.body;
+    if (body?.code === 0 && typeof body?.data?.text === "string") {
+      splayer.log.info("繁化姬简体化转换成功");
+      return body.data.text;
+    }
+  } catch (err) {
+    splayer.log.warn("繁化姬简体化转换失败，保留原内容", err?.message);
+  }
+  return text;
+};
+
+/**
+ * 预处理 TTML：
+ * 1. 若翻译段标头包含 type="replacement" 且 xml:lang 包含 zh-Hans（简体中文替换型翻译），直接丢弃整块 <translation>...</translation> 完整翻译。
+ * 2. 若 XML 的语言声明包含 zh-Hant 前缀（如 zh-Hant, zh-Hant-TW, zh-Hant-HK），调用繁化姬 API 转换为简体中文，并将语言声明改为 zh-Hans。
+ */
+const processTTMLSimplified = async (ttml) => {
+  if (!ttml || typeof ttml !== "string") return ttml;
+
+  // 1. 照旧丢弃 zh-Hans 的 replacement 翻译段
+  let processed = filterReplacementZhHansTranslation(ttml);
+
+  // 2. 检测 XML 声明中是否含有 zh-Hant 前缀（如 zh-Hant, zh-Hant-TW, zh-Hant-HK 等）
+  const hasZhHant = /\bxml:lang=["']zh-Hant([-_][a-zA-Z0-9]+)?["']/i.test(processed);
+  if (hasZhHant) {
+    splayer.log.info("检测到 zh-Hant 语言声明，调用繁化姬 API 进行简体化转换");
+    processed = await convertToZhHans(processed);
+    // 3. 将语言声明改为 zh-Hans
+    processed = processed.replace(
+      /\bxml:lang=["']zh-Hant([-_][a-zA-Z0-9]+)?["']/gi,
+      'xml:lang="zh-Hans"',
+    );
+  }
+
+  return processed;
+};
+
+/**
  * 校验 TTML 是否为逐字歌词（Syllable-level）：
  * 1. 若标头显式声明 itunes:timing="Line" 或 "None"，则不是逐字
  * 2. 必须包含带有 begin / end 时间戳的 <span> 逐字标签
@@ -651,7 +702,7 @@ splayer.on("musicLyric", async ({ musicInfo }) => {
 
   let ttml = pickTTML(resp.body);
   if (!ttml) return { lyric: "" };
-  ttml = filterReplacementZhHansTranslation(ttml);
+  ttml = await processTTMLSimplified(ttml);
   if (!ttml.trim()) return { lyric: "" };
 
   // 2. 严格校验 TTML 内容是否具备逐字 span 时间戳
