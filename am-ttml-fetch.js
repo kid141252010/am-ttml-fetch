@@ -1,13 +1,13 @@
 /**
  * @name        AM TTML Fetch
  * @id          dev.splayer.am-ttml-fetch
- * @version     0.1.4
+ * @version     0.1.5
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译），作为内置歌词源全 miss 时的兜底
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   繁化姬简体化增加 5 秒严格超时熔断机制与直接返回原文的兜底策略
+ * @changelog   繁化姬转换优化：8s 总超时熔断，并在 4s 未响应时发起重试请求
  */
 
 /* ========================= 常规默认配置 =========================
@@ -570,43 +570,90 @@ const filterReplacementZhHansTranslation = (ttml) => {
     });
 };
 
+/** 单次请求繁化姬转换接口 */
+const fetchZhConvertOnce = async (text) => {
+  const resp = await splayer.request("https://api.zhconvert.org/convert", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text,
+      converter: "Simplified",
+    }),
+    timeout: 8000,
+  });
+  const body = typeof resp?.body === "string" ? JSON.parse(resp.body) : resp?.body;
+  if (body?.code === 0 && typeof body?.data?.text === "string") {
+    return body.data.text;
+  }
+  throw new Error(body?.msg || `状态码异常: ${resp?.status}`);
+};
+
 /**
  * 使用繁化姬 API (https://api.zhconvert.org/) 将繁体文本转为简体中文
- * 严格 5 秒超时熔断；若请求失败或超时则直接返回原文
+ * 策略：总超时 8s，若 4s 未响应则发起重试，任一请求成功即返回，超时则直接返回原文
  */
 const convertToZhHans = async (text) => {
   if (!text || typeof text !== "string") return { text, success: false };
+
   try {
-    const fetchPromise = splayer.request("https://api.zhconvert.org/convert", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text,
-        converter: "Simplified",
-      }),
-      timeout: 5000,
+    const result = await new Promise((resolve, reject) => {
+      let isDone = false;
+      let retryTimer = null;
+      let totalTimer = null;
+
+      const finishSuccess = (convertedText) => {
+        if (isDone) return;
+        isDone = true;
+        clearTimeout(retryTimer);
+        clearTimeout(totalTimer);
+        resolve(convertedText);
+      };
+
+      const finishFail = (err) => {
+        if (isDone) return;
+        isDone = true;
+        clearTimeout(retryTimer);
+        clearTimeout(totalTimer);
+        reject(err);
+      };
+
+      // 8秒总超时
+      totalTimer = setTimeout(() => {
+        finishFail(new Error("繁化姬请求总超时 (8000ms)"));
+      }, 8000);
+
+      // 第 1 次尝试
+      fetchZhConvertOnce(text)
+        .then(finishSuccess)
+        .catch((err) => {
+          splayer.log.warn("繁化姬第 1 次请求异常:", err?.message);
+        });
+
+      // 4 秒未完成则发起第 2 次重试
+      retryTimer = setTimeout(() => {
+        if (isDone) return;
+        splayer.log.info("繁化姬 4s 未返回，发起第 2 次重试请求");
+        fetchZhConvertOnce(text)
+          .then(finishSuccess)
+          .catch((err) => {
+            splayer.log.warn("繁化姬重试请求异常:", err?.message);
+          });
+      }, 4000);
     });
 
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("繁化姬转换超时 (5000ms)")), 5000),
-    );
-
-    const resp = await Promise.race([fetchPromise, timeoutPromise]);
-    const body = typeof resp?.body === "string" ? JSON.parse(resp.body) : resp?.body;
-    if (body?.code === 0 && typeof body?.data?.text === "string") {
-      splayer.log.info("繁化姬简体化转换成功");
-      return { text: body.data.text, success: true };
-    }
+    splayer.log.info("繁化姬简体化转换成功");
+    return { text: result, success: true };
   } catch (err) {
-    splayer.log.warn("繁化姬简体化转换失败/超时，直接返回原文兜底", err?.message);
+    splayer.log.warn("繁化姬简体化转换失败/超时，直接返回原文兜底:", err?.message);
   }
+
   return { text, success: false };
 };
 
 /**
  * 预处理 TTML：
  * 1. 若翻译段标头包含 type="replacement" 且 xml:lang 包含 zh-Hans（简体中文替换型翻译），直接丢弃整块 <translation>...</translation> 完整翻译。
- * 2. 若 XML 的语言声明包含 zh-Hant 前缀（如 zh-Hant, zh-Hant-TW, zh-Hant-HK），调用繁化姬 API (5s 超时) 转换为简体中文；转换成功则更新 xml:lang 为 zh-Hans，失败/超时则直接兜底返回原文。
+ * 2. 若 XML 的语言声明包含 zh-Hant 前缀（如 zh-Hant, zh-Hant-TW, zh-Hant-HK），调用繁化姬 API (8s 总超时/4s 重试) 转换为简体中文；转换成功则更新 xml:lang 为 zh-Hans，失败/超时则直接兜底返回原文。
  */
 const processTTMLSimplified = async (ttml) => {
   if (!ttml || typeof ttml !== "string") return ttml;
@@ -617,7 +664,7 @@ const processTTMLSimplified = async (ttml) => {
   // 2. 检测 XML 声明中是否含有 zh-Hant 前缀（如 zh-Hant, zh-Hant-TW, zh-Hant-HK 等）
   const hasZhHant = /\bxml:lang=["']zh-Hant([-_][a-zA-Z0-9]+)?["']/i.test(processed);
   if (hasZhHant) {
-    splayer.log.info("检测到 zh-Hant 语言声明，调用繁化姬 API 进行简体化转换 (5s 超时保护)");
+    splayer.log.info("检测到 zh-Hant 语言声明，调用繁化姬 API 进行简体化转换 (8s 超时 / 4s 重试)");
     const { text: converted, success } = await convertToZhHans(processed);
     processed = converted;
     // 仅在繁化姬成功转换后才将语言声明改为 zh-Hans，超时/失败保留原声明
