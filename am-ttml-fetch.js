@@ -1,13 +1,13 @@
 /**
  * @name        AM TTML Fetch
  * @id          dev.splayer.am-ttml-fetch
- * @version     0.2.3
+ * @version     0.2.4
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译）
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   预处理 Apple Music 简体替换段 (type=replacement)，无损融合进主歌词并更新声明语言
+ * @changelog   全链路性能提速：ISRC预绑定免桥接、跳过无效跨区ID探测、引入负缓存防重复卡顿、长尾请求超时隔离
  */
 
 /* ========================= 常规默认配置 =========================
@@ -31,9 +31,9 @@ const MATCH_LEVEL = "standard";
 
 /**
  * 原文曲库：账号地区曲库会把中日韩曲名译成英文导致匹配不上，
- * 这里指定保留原文的曲库一起搜索，逗号分隔。只听欧美可留空以减少请求
+ * 这里指定保留原文的曲库一起搜索，逗号分隔。默认 cn,tw,jp
  */
-const SEARCH_REGIONS = "cn,jp,tw,kr";
+const SEARCH_REGIONS = "cn,tw,jp";
 
 /** 歌词翻译 / 音译语言标签，留空则只取原文 */
 const TRANSLATION_LANG = "zh-Hans-CN";
@@ -63,6 +63,12 @@ const SEARCH_LIMIT = 10;
 
 /** 歌词缓存条目上限，超出按写入顺序淘汰 */
 const LYRIC_CACHE_MAX = 50;
+
+/** 单个曲库搜索的超时保护（毫秒），避免个别曲库长尾延迟阻塞全部搜索 */
+const SEARCH_SINGLE_TIMEOUT = 4500;
+
+/** 负缓存标记：标记无逐字歌词或纯逐行歌词，避免切歌时重复发起多重请求 */
+const NO_SYLLABLE_MARKER = "__NO_SYLLABLE__";
 
 /**
  * 匹配容错档位
@@ -124,8 +130,8 @@ splayer.register({
       type: "text",
       label: "原文辅助搜索曲库",
       description: "保留原文搜索的地区列表（逗号分隔），防止中日韩曲名被自动英译后匹配失败",
-      default: "cn,jp,tw,kr",
-      placeholder: "cn,jp,tw,kr",
+      default: "cn,tw,jp",
+      placeholder: "cn,tw,jp",
     },
     {
       key: "translationLang",
@@ -200,14 +206,16 @@ const readJwtPayload = (token) => {
 };
 
 /** 带鉴权头请求 amp-api */
-const ampRequest = async (path, devToken, mediaUserToken) => {
+const ampRequest = async (path, devToken, mediaUserToken, timeoutMs) => {
   const headers = {
     Accept: "application/json",
     Authorization: `Bearer ${devToken}`,
     Origin: AMP_ORIGIN,
   };
   if (mediaUserToken) headers["Media-User-Token"] = mediaUserToken;
-  const resp = await splayer.request(`${AMP_BASE}${path}`, { headers, responseType: "json" });
+  const opts = { headers, responseType: "json" };
+  if (timeoutMs) opts.timeout = timeoutMs;
+  const resp = await splayer.request(`${AMP_BASE}${path}`, opts);
   return { status: resp.status, body: resp.body };
 };
 
@@ -294,13 +302,25 @@ const requireMediaUserToken = () => {
 };
 
 /**
- * 请求 amp-api，401 时重取一次开发者 token 后重试
- * Apple 会提前轮换 token，重试一次即可自愈，无需用户干预
+ * 请求 amp-api，401 时重取一次开发者 token 后重试；
+ * 遇到偶发网络中断/重置 (ECONNRESET) 时自愈重试 1 次
  */
-const ampRequestWithRetry = async (path, mediaUserToken) => {
-  let resp = await ampRequest(path, await getDevToken(), mediaUserToken);
+const ampRequestWithRetry = async (path, mediaUserToken, timeoutMs) => {
+  const send = async (token) => {
+    try {
+      return await ampRequest(path, token, mediaUserToken, timeoutMs);
+    } catch (err) {
+      if (/network|reset|econnreset|timeout/i.test(err?.message ?? "")) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        return await ampRequest(path, token, mediaUserToken, timeoutMs);
+      }
+      throw err;
+    }
+  };
+
+  let resp = await send(await getDevToken());
   if (resp.status === 401) {
-    resp = await ampRequest(path, await getDevToken(true), mediaUserToken);
+    resp = await send(await getDevToken(true));
   }
   return resp;
 };
@@ -390,10 +410,10 @@ const deriveArtistAlias = (keyword, candidateName, mode) => {
   return rest.length >= 2 ? rest : "";
 };
 
-/** 在单个曲库里搜候选，失败不影响其它曲库 */
+/** 在单个曲库里搜候选，失败或超时不影响其它曲库 */
 const searchStorefront = async (storefront, keyword, mediaUserToken) => {
   const path = `/catalog/${storefront}/search?term=${encodeURIComponent(keyword)}&types=songs&limit=${SEARCH_LIMIT}`;
-  const resp = await ampRequestWithRetry(path, mediaUserToken);
+  const resp = await ampRequestWithRetry(path, mediaUserToken, SEARCH_SINGLE_TIMEOUT);
   if (resp.status !== 200) {
     splayer.log.warn(`搜索失败 sf=${storefront} HTTP ${resp.status}`);
     return [];
@@ -447,7 +467,7 @@ splayer.on("musicSearch", async ({ keyword }) => {
     }
   }
 
-  // 对原词及别名扩充词在各曲库并发搜索
+  // 对原词及别名扩充词在各曲库并发搜索（各曲库自带短超时保护）
   const searchTasks = [];
   for (const kw of searchKeywords) {
     for (const sf of storefronts) {
@@ -485,10 +505,20 @@ splayer.on("musicSearch", async ({ keyword }) => {
   const level = getMatchLevel();
   const list = [];
   for (const item of merged.values()) {
-    // 不在账号库的候选按时长认领一条账号库同录音，取词时免去桥接
+    // 不在账号库的候选：优先按 ISRC 精准匹配，次选按时长认领账号库同录音；
+    // 取词时可直接使用该 ID，彻底免去额外的跨区桥接网络请求！
     if (!item.inAccount) {
-      const twin = accountItems.find((cand) => sameRecording(cand.durationMs, item.durationMs));
-      if (twin) item.accountId = twin.id;
+      let twin = null;
+      if (item.isrc) {
+        twin = accountItems.find((cand) => cand.isrc && cand.isrc === item.isrc);
+      }
+      if (!twin) {
+        twin = accountItems.find((cand) => sameRecording(cand.durationMs, item.durationMs));
+      }
+      if (twin) {
+        item.accountId = twin.id;
+        splayer.storage.set(`bridge:${accountStorefront}:${item.storefront}:${item.id}`, twin.id).catch(() => {});
+      }
     }
 
     const alias = deriveArtistAlias(keyword, item.name, level.alias);
@@ -556,7 +586,7 @@ splayer.on("musicSearch", async ({ keyword }) => {
 /**
  * 定位候选在账号曲库里的歌曲 id
  * 歌词只存在于账号所属曲库，原文库搜到的 id 直接取词多半 404
- * 顺序：搜索阶段认领的同录音 id → 同 id 在账号库直接可用 → ISRC 反查
+ * 顺序：搜索阶段认领的同录音 id → 缓存映射 → ISRC 直接反查 → 降级直接探测
  * @returns 账号曲库内的歌曲 id，定位不到返回 null
  */
 const resolveAccountSongId = async (musicInfo, accountStorefront, mediaUserToken) => {
@@ -565,9 +595,34 @@ const resolveAccountSongId = async (musicInfo, accountStorefront, mediaUserToken
 
   const cacheKey = `bridge:${accountStorefront}:${musicInfo.storefront}:${musicInfo.id}`;
   const cached = await splayer.storage.get(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    return cached === "__NOT_FOUND__" ? null : cached;
+  }
 
-  // 同一 catalog id 常在多个曲库通用，先直接探一次
+  // 1. 优先通过 ISRC 直接反查账号库：
+  // 经实测跨区 Catalog Song ID 互不通用，盲猜探测绝大多数返回 404（白等约 500ms）；
+  // 而 ISRC 跨区精准统一，一步到位避免多重串行往返
+  if (musicInfo.isrc) {
+    const path = `/catalog/${accountStorefront}/songs?filter%5Bisrc%5D=${encodeURIComponent(musicInfo.isrc)}`;
+    const resp = await ampRequestWithRetry(path, mediaUserToken);
+    if (resp.status === 200) {
+      const matches = (resp.body?.data ?? []).filter(
+        (item) =>
+          !musicInfo.durationMs ||
+          sameRecording(item.attributes?.durationInMillis, musicInfo.durationMs),
+      );
+      const best =
+        matches.find((item) => item.attributes?.hasTimeSyncedLyrics) ??
+        matches.find((item) => item.attributes?.hasLyrics);
+      if (best) {
+        const id = String(best.id);
+        await splayer.storage.set(cacheKey, id);
+        return id;
+      }
+    }
+  }
+
+  // 2. 无 ISRC 或 ISRC 反查无果时，降级探测原 catalog id 在账号库是否通用
   const direct = await ampRequestWithRetry(
     `/catalog/${accountStorefront}/songs/${musicInfo.id}`,
     mediaUserToken,
@@ -577,24 +632,8 @@ const resolveAccountSongId = async (musicInfo, accountStorefront, mediaUserToken
     return musicInfo.id;
   }
 
-  if (!musicInfo.isrc) return null;
-  const path = `/catalog/${accountStorefront}/songs?filter%5Bisrc%5D=${encodeURIComponent(musicInfo.isrc)}`;
-  const resp = await ampRequestWithRetry(path, mediaUserToken);
-  if (resp.status !== 200) return null;
-
-  // 同一 ISRC 可能对应多个版本，优先带逐字歌词、且时长确属同一录音的那条
-  const matches = (resp.body?.data ?? []).filter(
-    (item) =>
-      !musicInfo.durationMs ||
-      sameRecording(item.attributes?.durationInMillis, musicInfo.durationMs),
-  );
-  const best =
-    matches.find((item) => item.attributes?.hasTimeSyncedLyrics) ??
-    matches.find((item) => item.attributes?.hasLyrics);
-  if (!best) return null;
-  const id = String(best.id);
-  await splayer.storage.set(cacheKey, id);
-  return id;
+  await splayer.storage.set(cacheKey, "__NOT_FOUND__");
+  return null;
 };
 
 /** 从歌词响应里取出 TTML，带翻译的本地化版本优先 */
@@ -728,6 +767,9 @@ splayer.on("musicLyric", async ({ musicInfo }) => {
   const cacheKey = `lyric:${accountStorefront}:${songId}:${lang}:${script}`;
   const cached = await splayer.storage.get(cacheKey);
   if (cached) {
+    if (cached === NO_SYLLABLE_MARKER) {
+      return { lyric: "" };
+    }
     if (isSyllableTTML(cached)) {
       return { lyric: cached, awlyric: cached };
     }
@@ -744,25 +786,35 @@ splayer.on("musicLyric", async ({ musicInfo }) => {
   }
   if (resp.status !== 200) {
     splayer.log.warn(`歌词请求失败 HTTP ${resp.status} id=${songId} sf=${accountStorefront}`);
+    if (resp.status === 404) {
+      await cacheLyric(cacheKey, NO_SYLLABLE_MARKER);
+    }
     return { lyric: "" };
   }
 
   const attrs = resp.body?.data?.[0]?.attributes;
-  if (!attrs) return { lyric: "" };
+  if (!attrs) {
+    await cacheLyric(cacheKey, NO_SYLLABLE_MARKER);
+    return { lyric: "" };
+  }
 
-  // 1. 如果 displayType 是 2（或者不是 1），判定为普通逐行歌词，丢弃
+  // 1. 如果 displayType 是 2（或者不是 1），判定为普通逐行歌词，丢弃并写入负缓存
   if (attrs.displayType === 2 || String(attrs.displayType) === "2") {
     splayer.log.info(`歌词为逐行类型 (displayType=2)，丢弃不传给宿主 id=${songId}`);
+    await cacheLyric(cacheKey, NO_SYLLABLE_MARKER);
     return { lyric: "" };
   }
 
   let ttml = pickTTML(resp.body);
-  if (!ttml) return { lyric: "" };
-  if (!ttml.trim()) return { lyric: "" };
+  if (!ttml || !ttml.trim()) {
+    await cacheLyric(cacheKey, NO_SYLLABLE_MARKER);
+    return { lyric: "" };
+  }
 
   // 2. 严格校验 TTML 内容是否具备逐字 span 时间戳
   if (!isSyllableTTML(ttml)) {
     splayer.log.info(`TTML 内容为逐行歌词（无逐字 span 标记），丢弃不传给宿主 id=${songId}`);
+    await cacheLyric(cacheKey, NO_SYLLABLE_MARKER);
     return { lyric: "" };
   }
 
