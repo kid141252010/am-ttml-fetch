@@ -2,7 +2,7 @@
 
 [![SPlayer-Next Plugin](https://img.shields.io/badge/SPlayer--Next-Plugin-blue.svg)](https://github.com/SPlayer-Dev/SPlayer-Next)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v0.2.4-orange.svg)](am-ttml-fetch.js)
+[![Version](https://img.shields.io/badge/version-v0.2.6-orange.svg)](am-ttml-fetch.js)
 
 针对 [SPlayer-Next](https://github.com/SPlayer-Dev/SPlayer-Next) 播放器的音源与歌词拓展插件。搜索 Apple Music 全球曲库，提取 TTML 歌词（含内嵌翻译与音译）。
 

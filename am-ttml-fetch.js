@@ -1,13 +1,13 @@
 /**
  * @name        AM TTML Fetch
  * @id          dev.splayer.am-ttml-fetch
- * @version     0.2.4
+ * @version     0.2.6
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译）
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   全链路性能提速：ISRC预绑定免桥接、跳过无效跨区ID探测、引入负缓存防重复卡顿、长尾请求超时隔离
+ * @changelog   HOYO-MiX 歌手页专辑支持全量自动翻页拉取，结合按需曲目加载与持久缓存，覆盖全部历史发行同日期匹配
  */
 
 /* ========================= 常规默认配置 =========================
@@ -428,6 +428,7 @@ const searchStorefront = async (storefront, keyword, mediaUserToken) => {
       singer: attrs.artistName ?? "",
       album: attrs.albumName ?? "",
       durationMs: attrs.durationInMillis,
+      releaseDate: attrs.releaseDate ?? "",
       storefront,
       isrc: attrs.isrc ?? "",
       hasTimeSyncedLyrics: Boolean(attrs.hasTimeSyncedLyrics),
@@ -439,6 +440,204 @@ const searchStorefront = async (storefront, keyword, mediaUserToken) => {
 /** 时长足够接近，视为同一录音 */
 const sameRecording = (leftMs, rightMs) =>
   Boolean(leftMs) && Boolean(rightMs) && Math.abs(leftMs - rightMs) <= 2000;
+
+/** HOYO-MiX 官方 Artist ID（全球各曲库一致） */
+const HOYOMIX_ARTIST_ID = "1447413190";
+
+/** 判断艺人文本是否包含 HOYO-MiX */
+const isHoyoMixArtist = (text) => /hoyo-?mix/i.test(String(text ?? ""));
+
+/** 伴奏/和声伴奏/纯音过滤正则 */
+const INSTRUMENTAL_RE =
+  /\b(instrumental|harmonic\s*accompaniment|karaoke|off\s*vocal)\b|[\(（\[【](?:伴奏|和声伴奏|纯音|纯乐)[\)）\]】]/i;
+
+/** 判定是否为伴奏或无词版本 */
+const isInstrumentalOrNoLyric = (track) => {
+  if (track.hasLyrics === false) return true;
+  if (INSTRUMENTAL_RE.test(track.name)) return true;
+  return false;
+};
+
+/** HOYO-MiX 歌手页专辑缓存（storefront -> { expireAt, albums }）与并发防抖任务 */
+const hoyoMixAlbumsCache = new Map();
+const hoyoMixAlbumsTasks = new Map();
+const HOYOMIX_CACHE_TTL = 24 * 60 * 60 * 1000; // 24小时持久缓存
+
+/**
+ * 获取单张专辑的曲目列表（若该专辑未内嵌 tracks 时按需调用）
+ */
+const fetchAlbumTracks = async (storefront, albumId, mediaUserToken) => {
+  try {
+    const path = `/catalog/${storefront}/albums/${albumId}/tracks`;
+    const resp = await ampRequestWithRetry(path, mediaUserToken, 5000);
+    if (resp.status !== 200) return [];
+    return (resp.body?.data ?? []).map((t) => {
+      const tAttrs = t.attributes ?? {};
+      return {
+        id: String(t.id),
+        name: tAttrs.name ?? "",
+        singer: tAttrs.artistName ?? "",
+        durationMs: tAttrs.durationInMillis,
+        isrc: tAttrs.isrc ?? "",
+        hasLyrics: Boolean(tAttrs.hasLyrics),
+        hasTimeSyncedLyrics: Boolean(tAttrs.hasTimeSyncedLyrics),
+      };
+    });
+  } catch (err) {
+    splayer.log.warn(`获取专辑 tracks 失败 sf=${storefront} album=${albumId}`, err?.message);
+    return [];
+  }
+};
+
+/**
+ * 全量获取账号曲库中 HOYO-MiX 自 2018 年以来的所有专辑/EP/Single/合辑
+ * 自动翻页覆盖全部（目前 150+ 张），第 1 页自带最新 tracks，老专辑按需拉取 tracks 并缓存
+ */
+const fetchHoyoMixAlbums = async (storefront, mediaUserToken) => {
+  const now = Date.now();
+  const cached = hoyoMixAlbumsCache.get(storefront);
+  if (cached && cached.expireAt > now) {
+    return cached.albums;
+  }
+  // 检查 storage 持久缓存
+  const stored = await splayer.storage.get(`hoyoMixAlbums:${storefront}`);
+  if (stored && stored.expireAt > now && Array.isArray(stored.albums) && stored.albums.length > 0) {
+    hoyoMixAlbumsCache.set(storefront, stored);
+    return stored.albums;
+  }
+
+  if (hoyoMixAlbumsTasks.has(storefront)) {
+    return hoyoMixAlbumsTasks.get(storefront);
+  }
+
+  const task = (async () => {
+    try {
+      const albums = [];
+      let offset = 0;
+      while (true) {
+        // 第 1 页（最新 100 张发行）直接 include=tracks，后续历史发行极速拉取专辑元数据
+        const includeParam = offset === 0 ? "&include=tracks" : "";
+        const path = `/catalog/${storefront}/artists/${HOYOMIX_ARTIST_ID}/albums?offset=${offset}&limit=100&sort=-releaseDate${includeParam}`;
+        const resp = await ampRequestWithRetry(path, mediaUserToken, 8000);
+        if (resp.status !== 200) {
+          splayer.log.warn(`获取 HOYO-MiX 专辑列表失败 sf=${storefront} offset=${offset} HTTP ${resp.status}`);
+          break;
+        }
+        const items = resp.body?.data ?? [];
+        if (items.length === 0) break;
+
+        for (const item of items) {
+          const attrs = item.attributes ?? {};
+          const tracksData = item.relationships?.tracks?.data;
+          const tracks = tracksData
+            ? tracksData.map((t) => {
+                const tAttrs = t.attributes ?? {};
+                return {
+                  id: String(t.id),
+                  name: tAttrs.name ?? "",
+                  singer: tAttrs.artistName ?? "",
+                  durationMs: tAttrs.durationInMillis,
+                  isrc: tAttrs.isrc ?? "",
+                  hasLyrics: Boolean(tAttrs.hasLyrics),
+                  hasTimeSyncedLyrics: Boolean(tAttrs.hasTimeSyncedLyrics),
+                };
+              })
+            : null;
+
+          albums.push({
+            id: String(item.id),
+            name: attrs.name ?? "",
+            releaseDate: attrs.releaseDate ?? "",
+            tracks,
+          });
+        }
+
+        if (items.length < 100) break;
+        offset += items.length;
+      }
+
+      splayer.log.info(`HOYO-MiX 全量专辑清单已就绪，共 ${albums.length} 张发行 (sf=${storefront})`);
+      const cacheEntry = { expireAt: now + HOYOMIX_CACHE_TTL, albums };
+      hoyoMixAlbumsCache.set(storefront, cacheEntry);
+      splayer.storage.set(`hoyoMixAlbums:${storefront}`, cacheEntry).catch(() => {});
+      return albums;
+    } catch (err) {
+      splayer.log.warn(`获取 HOYO-MiX 专辑异常 sf=${storefront}`, err?.message);
+      return [];
+    } finally {
+      hoyoMixAlbumsTasks.delete(storefront);
+    }
+  })();
+
+  hoyoMixAlbumsTasks.set(storefront, task);
+  return task;
+};
+
+/**
+ * 专为 HOYO-MiX 设计的跨区同录音对齐逻辑：
+ * 在账号曲库的 HOYO-MiX 歌手页中直接寻找同发售日期的专辑/EP/Single/合辑，
+ * 严格过滤伴奏与和声伴奏，精准比对录音时长与歌手
+ */
+const matchHoyoMixAccountTrack = async (cand, accountStorefront, mediaUserToken) => {
+  if (!cand || !isHoyoMixArtist(cand.singer)) return null;
+
+  const albums = await fetchHoyoMixAlbums(accountStorefront, mediaUserToken);
+  if (!albums || albums.length === 0) return null;
+
+  const candDate = cand.releaseDate;
+  const matched = [];
+
+  for (const album of albums) {
+    let isExactDate = false;
+    let isCloseDate = false;
+    if (candDate) {
+      if (album.releaseDate === candDate) {
+        isExactDate = true;
+      } else if (album.releaseDate) {
+        const diffDays = Math.abs(new Date(album.releaseDate) - new Date(candDate)) / 86400000;
+        if (diffDays <= 1.1) isCloseDate = true;
+      }
+    }
+    if (candDate && !isExactDate && !isCloseDate) continue;
+
+    // 若老专辑未内嵌 tracks，按需只拉取命中日期的这 1~2 张专辑的曲目
+    let tracks = album.tracks;
+    if (!tracks) {
+      tracks = await fetchAlbumTracks(accountStorefront, album.id, mediaUserToken);
+      album.tracks = tracks;
+    }
+
+    for (const track of tracks) {
+      // 1. 严格忽略伴奏版（Instrumental、Harmonic Accompaniment、伴奏、纯音）与无词版本
+      if (isInstrumentalOrNoLyric(track)) continue;
+
+      // 2. 时长精准比对（误差 2 秒内）
+      if (!sameRecording(track.durationMs, cand.durationMs)) continue;
+
+      matched.push({
+        track,
+        album,
+        isExactDate,
+        hasTimeSyncedLyrics: track.hasTimeSyncedLyrics,
+      });
+    }
+  }
+
+  if (matched.length === 0) return null;
+
+  // 排序优先：完全同发售日期 > 具备逐字/逐行歌词
+  matched.sort((a, b) => {
+    if (a.isExactDate !== b.isExactDate) return a.isExactDate ? -1 : 1;
+    if (a.hasTimeSyncedLyrics !== b.hasTimeSyncedLyrics) return a.hasTimeSyncedLyrics ? -1 : 1;
+    return 0;
+  });
+
+  const best = matched[0].track;
+  splayer.log.info(
+    `HOYO-MiX 歌手页同日期对齐成功: [${cand.name}](${cand.storefront}) -> [${best.name}](${accountStorefront} id=${best.id})`,
+  );
+  return best;
+};
 
 splayer.on("musicSearch", async ({ keyword }) => {
   const mediaUserToken = requireMediaUserToken();
@@ -515,6 +714,11 @@ splayer.on("musicSearch", async ({ keyword }) => {
       if (!twin) {
         twin = accountItems.find((cand) => sameRecording(cand.durationMs, item.durationMs));
       }
+      // HOYO-MiX 特殊通道：若账号库未通过常规方式认领，立即在 HOYO-MiX 歌手页寻找同日期非伴奏同录音！
+      if (!twin && isHoyoMixArtist(item.singer)) {
+        const hoyoTrack = await matchHoyoMixAccountTrack(item, accountStorefront, mediaUserToken);
+        if (hoyoTrack) twin = hoyoTrack;
+      }
       if (twin) {
         item.accountId = twin.id;
         splayer.storage.set(`bridge:${accountStorefront}:${item.storefront}:${item.id}`, twin.id).catch(() => {});
@@ -551,12 +755,17 @@ splayer.on("musicSearch", async ({ keyword }) => {
         const featIdx = keyword.indexOf(featMatches[0]);
         name = keyword.slice(0, featIdx + featMatches[0].length).trim();
       } else {
-        // 无 feat 时，从关键词中剥离歌手，保留与宿主完全一致的歌名原文字符
+        // 无 feat 时，循环从关键词末尾剥离所有匹配的歌手，保留与宿主完全一致的歌名原文字符
         let rawTitle = keyword.trim();
-        for (const artist of singer.split("/")) {
-          const trimmed = artist.trim();
-          if (trimmed && rawTitle.toLowerCase().endsWith(trimmed.toLowerCase())) {
-            rawTitle = rawTitle.slice(0, -trimmed.length).trim();
+        const artistParts = singer.split(/[\/,;&、，]+/).map((a) => a.trim()).filter(Boolean);
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (const artist of artistParts) {
+            if (rawTitle.toLowerCase().endsWith(artist.toLowerCase())) {
+              rawTitle = rawTitle.slice(0, -artist.length).trim();
+              changed = true;
+            }
           }
         }
         if (rawTitle) name = rawTitle;
@@ -596,7 +805,31 @@ const resolveAccountSongId = async (musicInfo, accountStorefront, mediaUserToken
   const cacheKey = `bridge:${accountStorefront}:${musicInfo.storefront}:${musicInfo.id}`;
   const cached = await splayer.storage.get(cacheKey);
   if (cached) {
-    return cached === "__NOT_FOUND__" ? null : cached;
+    if (cached !== "__NOT_FOUND__") return cached;
+    // 若旧缓存是 __NOT_FOUND__，但属于 HOYO-MiX，允许打破旧缓存自愈重新探测
+    if (!isHoyoMixArtist(musicInfo.singer)) return null;
+  }
+
+  // 0. HOYO-MiX 专属优先通道：直接在歌手页匹配同日期同录音，彻底解决中外曲名/ISRC双轨不一致问题
+  if (isHoyoMixArtist(musicInfo.singer)) {
+    if (!musicInfo.releaseDate) {
+      try {
+        const probe = await ampRequestWithRetry(
+          `/catalog/${musicInfo.storefront}/songs/${musicInfo.id}`,
+          mediaUserToken,
+          SEARCH_SINGLE_TIMEOUT,
+        );
+        if (probe.status === 200) {
+          musicInfo.releaseDate = probe.body?.data?.[0]?.attributes?.releaseDate ?? "";
+        }
+      } catch {}
+    }
+    const hoyoTrack = await matchHoyoMixAccountTrack(musicInfo, accountStorefront, mediaUserToken);
+    if (hoyoTrack) {
+      const id = String(hoyoTrack.id);
+      await splayer.storage.set(cacheKey, id);
+      return id;
+    }
   }
 
   // 1. 优先通过 ISRC 直接反查账号库：
