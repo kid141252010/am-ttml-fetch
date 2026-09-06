@@ -2,7 +2,7 @@
 
 [![SPlayer-Next Plugin](https://img.shields.io/badge/SPlayer--Next-Plugin-blue.svg)](https://github.com/SPlayer-Dev/SPlayer-Next)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v0.2.7-orange.svg)](am-ttml-fetch.js)
+[![Version](https://img.shields.io/badge/version-v1.0.0-orange.svg)](am-ttml-fetch.js)
 
 针对 [SPlayer-Next](https://github.com/SPlayer-Dev/SPlayer-Next) 播放器的音源与歌词拓展插件。搜索 Apple Music 全球曲库，提取 TTML 歌词（含内嵌翻译与音译）。
 
@@ -10,7 +10,7 @@
 
 ## ✨ 核心特性
 
-- 🎵 **TTML 逐字歌词提取**：支持原生 syllable-level 逐字高亮动画与丰富样式，自动过滤无逐字标记的普通逐行歌词。
+- 🎵 **TTML 逐字歌词提取**：支持原生 syllable-level 逐字高亮动画与丰富样式，默认过滤无逐字标记的普通逐行歌词，支持设置开启放行。
 - 🇨🇳 **简体替换段无损融合**：自动将 Apple Music 内嵌的 `zh-Hans` 替换段（`type="replacement"`）合并进繁体主歌词，并自动同步语言声明。
 - 🌏 **全球曲库跨区检索**：支持同时在 `cn`、`jp`、`tw`、`kr` 等多个地区曲库发起并发搜索。
 - ⚙️ **图形化配置界面**：无需修改代码，在 SPlayer-Next「设置 → 插件 → Apple Music TTML → 配置」中直接填写参数。
@@ -34,6 +34,7 @@
 在 SPlayer-Next **「设置 → 插件管理 → AM TTML Fetch」** 卡片上点击 **【配置】** 按钮：
 - **Media-User-Token**：粘贴上一步复制的 Token 字符串。
 - **账号曲库地区**：填入订阅账号所属地区（如 `cn`, `us`, `jp`，留空自动读取）。
+- **是否接受逐行歌词**：默认关闭（仅获取逐字歌词）。开启后，`displayType=2` 等普通逐行歌词也会传给播放器显示。
 - **歌词翻译/语言 (l[lyrics])**：请求歌词语言（默认 `zh-Hans-CN`，推荐的还有 `zh-Hant-TW`）。
 - **歌词音译/脚本 (l[script])**：请求音译/字形脚本（如 `zh-Latn`, `ja-Kana`, `zh-Hans`，留空自动推导）。
 - **自定义匹配别名库**：格式为 `原词=别名`（如 `五月天=Mayday, 茄子蛋=EggPlantEgg`），提升外区检索匹配率。
