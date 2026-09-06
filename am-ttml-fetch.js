@@ -1,13 +1,13 @@
 /**
  * @name        AM TTML Fetch
  * @id          dev.splayer.am-ttml-fetch
- * @version     0.2.6
+ * @version     0.2.7
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译）
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   HOYO-MiX 歌手页专辑支持全量自动翻页拉取，结合按需曲目加载与持久缓存，覆盖全部历史发行同日期匹配
+ * @changelog   支持 Unicode NFC 规范化（兼容日文假名等 NFD 编码），增强 FEAT_PATTERN 支持无括号伴唱格式与智能曲名对齐
  */
 
 /* ========================= 常规默认配置 =========================
@@ -365,14 +365,16 @@ const getMatchLevel = () => {
   return MATCH_LEVELS[levelKey] ?? MATCH_LEVELS.standard;
 };
 
-/** 与宿主 normalize 对齐，用于比对曲名并从关键词里剥出歌手（强化标点、全角符号与省略号） */
+/** 与宿主 normalize 对齐，用于比对曲名并从关键词里剥出歌手（强化 Unicode NFC、标点、全角符号与省略号） */
 const normalize = (text) =>
   String(text ?? "")
+    .normalize("NFC")
     .toLowerCase()
     .replace(/[、&;，,/|()（）\[\]【】{}《》·・\s\-_'"`~!?？！.。…\^]+/g, "");
 
-/** 合作伴唱后缀正则（如 (feat. xxx), （feat. xxx）, [with xxx] 等） */
-const FEAT_PATTERN = /[\(\（\[\【](?:feat|ft|featuring|with)\b[^\)\）\]\】]*[\)\）\]\】]/gi;
+/** 合作伴唱后缀正则：支持带括号 ((feat. xxx), [with xxx]) 及无括号的独立伴唱 ( feat.xxx, feat xxx) */
+const FEAT_PATTERN =
+  /(?:[\(\（\[\【]\s*(?:feat|ft|featuring|with)\b[^\)\）\]\】]*[\)\）\]\】]|(?:\s+|^)(?:feat|ft|featuring|with)\b\.?\s*[^\s\(\[\{]+)/gi;
 
 /** 剥离曲名或关键词中的 feat / with 等伴唱后缀 */
 const stripFeat = (text) => String(text ?? "").replace(FEAT_PATTERN, "").trim();
