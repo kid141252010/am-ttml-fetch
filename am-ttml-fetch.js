@@ -1,6 +1,6 @@
 /**
  * @name        AM TTML Fetch
- * @id          dev.splayer.am-ttml-fetch
+ * @id          1412.am-ttml-fetch
  * @version     1.0.1
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译）
  * @author      1412
