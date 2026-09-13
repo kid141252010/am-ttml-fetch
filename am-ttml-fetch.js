@@ -6,6 +6,7 @@
  * @author      1412
  * @type        source
  * @apiLevel    1
+ * @grant       network
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
  * @changelog   修复带全角括号、省略号及合作伴唱（feat/with）曲目（如《（……侏儒之舞）》）匹配失败问题，支持自动提取歌名伴唱补全歌手列表并精准对齐曲名标点
  */
