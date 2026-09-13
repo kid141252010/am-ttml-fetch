@@ -1,14 +1,14 @@
 /**
  * @name        AM TTML Fetch
  * @id          1412.am-ttml-fetch
- * @version     1.0.1
+ * @version     1.0.2
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译）
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @grant       network
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   修复带全角括号、省略号及合作伴唱（feat/with）曲目（如《（……侏儒之舞）》）匹配失败问题，支持自动提取歌名伴唱补全歌手列表并精准对齐曲名标点
+ * @changelog   新增「同 ISRC 孪生单曲逐字自愈回退」与「Single 版优先排序」：当专辑版仅有逐行歌词时，自动拉取并无缝升级为单曲版（Single）的原生 TTML 逐字歌词
  */
 
 /* ========================= 常规默认配置 =========================
@@ -848,7 +848,10 @@ splayer.on("musicSearch", async ({ keyword }) => {
     list.push({ ...item, name, singer });
   }
 
-  // 关键排序：非 Live 关键词下，优先录音室专辑正式版排在前面，防止被 Live 现场版（通常为逐行歌词）抢占
+  // 关键排序：
+  // 1. 非 Live 关键词下，优先录音室正式版排在前面，防止被 Live 现场版抢占
+  // 2. 具备逐字标签优先
+  // 3. 具备 Single/单曲 标识优先（Apple 官方单曲版往往更早制作且具备完整的逐字时间戳）
   const isKeywordLive = /\blive\b/i.test(keyword);
   list.sort((a, b) => {
     const aIsLive = /\blive\b/i.test(a.name) || /\blive\b/i.test(a.album);
@@ -858,6 +861,11 @@ splayer.on("musicSearch", async ({ keyword }) => {
     }
     if (a.hasTimeSyncedLyrics !== b.hasTimeSyncedLyrics) {
       return b.hasTimeSyncedLyrics ? 1 : -1;
+    }
+    const aSingle = /single|单曲|ep/i.test(a.album) || /single|单曲|ep/i.test(a.name);
+    const bSingle = /single|单曲|ep/i.test(b.album) || /single|单曲|ep/i.test(b.name);
+    if (aSingle !== bSingle) {
+      return aSingle ? -1 : 1;
     }
     return 0;
   });
@@ -1090,7 +1098,8 @@ splayer.on("musicLyric", async ({ musicInfo }) => {
       if (acceptLineLyrics) {
         return { lyric: cached, awlyric: cached };
       }
-      return { lyric: "" };
+      // 当前未接受逐行歌词时打破旧缓存，以便重新发起自愈探测尝试获取同录音逐字版本
+      await splayer.storage.remove(cacheKey);
     }
   }
 
@@ -1125,8 +1134,54 @@ splayer.on("musicLyric", async ({ musicInfo }) => {
   ttml = applyReplacementTranslations(ttml);
 
   // 判定是否为普通逐行歌词（displayType 为 2 或内容无逐字 span 时间戳）
-  const isLineLyric =
+  let isLineLyric =
     attrs.displayType === 2 || String(attrs.displayType) === "2" || !isSyllableTTML(ttml);
+
+  // 核心自愈升级：若当前版本仅为普通逐行歌词，且具备 ISRC，自动探测同录音孪生版本（如 Single 单曲版）以获取逐字歌词！
+  const isrc = musicInfo.isrc || attrs.isrc;
+  if (isLineLyric && isrc) {
+    try {
+      const isrcPath = `/catalog/${accountStorefront}/songs?filter%5Bisrc%5D=${encodeURIComponent(isrc)}`;
+      const isrcResp = await ampRequestWithRetry(isrcPath, mediaUserToken, 3500);
+      if (isrcResp.status === 200) {
+        const twinSongs = (isrcResp.body?.data ?? []).filter((item) => String(item.id) !== songId);
+        // 优先探测标记为 Single/单曲 的版本，次选同录音其他版本
+        twinSongs.sort((a, b) => {
+          const aName = (a.attributes?.albumName ?? "") + (a.attributes?.name ?? "");
+          const bName = (b.attributes?.albumName ?? "") + (b.attributes?.name ?? "");
+          const aSingle = /single|单曲|ep/i.test(aName);
+          const bSingle = /single|单曲|ep/i.test(bName);
+          if (aSingle !== bSingle) return aSingle ? -1 : 1;
+          return 0;
+        });
+
+        for (const twin of twinSongs) {
+          const twinId = String(twin.id);
+          const twinResp = await ampRequestWithRetry(
+            `/catalog/${accountStorefront}/songs/${twinId}/syllable-lyrics${suffix}`,
+            mediaUserToken,
+            3500,
+          );
+          if (twinResp.status === 200) {
+            let twinTtml = pickTTML(twinResp.body);
+            if (twinTtml && twinTtml.trim()) {
+              twinTtml = applyReplacementTranslations(twinTtml);
+              if (isSyllableTTML(twinTtml)) {
+                splayer.log.info(
+                  `成功从孪生版本 id=${twinId} (${twin.attributes?.albumName}) 获取到逐字歌词，自愈替换原逐行版本 id=${songId}`,
+                );
+                ttml = twinTtml;
+                isLineLyric = false;
+                break;
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      splayer.log.warn(`孪生录音自愈探测失败 isrc=${isrc}`, err?.message);
+    }
+  }
 
   if (isLineLyric) {
     if (!acceptLineLyrics) {
