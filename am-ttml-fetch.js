@@ -1,13 +1,13 @@
 /**
  * @name        AM TTML Fetch
  * @id          dev.splayer.am-ttml-fetch
- * @version     1.0.0
+ * @version     1.0.1
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译）
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   新增「是否接受逐行歌词」配置项，支持放行 displayType=2 等普通逐行歌词并传递给 SPlayer Next
+ * @changelog   修复带全角括号、省略号及合作伴唱（feat/with）曲目（如《（……侏儒之舞）》）匹配失败问题，支持自动提取歌名伴唱补全歌手列表并精准对齐曲名标点
  */
 
 /* ========================= 常规默认配置 =========================
@@ -404,6 +404,23 @@ const FEAT_PATTERN =
 /** 剥离曲名或关键词中的 feat / with 等伴唱后缀 */
 const stripFeat = (text) => String(text ?? "").replace(FEAT_PATTERN, "").trim();
 
+/** 从曲名或文本中提取 feat / with 里的合作伴唱歌手名列表 */
+const extractFeatArtists = (text) => {
+  const matches = String(text ?? "").match(FEAT_PATTERN);
+  if (!matches) return [];
+  const artists = [];
+  for (const m of matches) {
+    const cleaned = m
+      .replace(/[\(\（\[\【\)\）\]\】]/g, "")
+      .replace(/^(?:feat|ft|featuring|with)\b\.?\s*/i, "")
+      .trim();
+    if (cleaned) {
+      artists.push(...cleaned.split(/[,/&、+]/).map((s) => s.trim()).filter(Boolean));
+    }
+  }
+  return artists;
+};
+
 /**
  * 从搜索关键词里剥出歌手部分
  *
@@ -417,7 +434,7 @@ const deriveArtistAlias = (keyword, candidateName, mode) => {
   if (mode === "off") return "";
   const cleanKw = stripFeat(keyword);
   const flatKeyword = normalize(cleanKw);
-  const flatName = normalize(candidateName);
+  const flatName = normalize(stripFeat(candidateName));
   if (!flatName) return "";
 
   if (flatKeyword.startsWith(flatName)) {
@@ -679,6 +696,18 @@ splayer.on("musicSearch", async ({ keyword }) => {
     searchKeywords.push(cleanKeyword);
   }
 
+  // 1.1 进一步剥离省略号及外层括号的精简搜索词（应对《（……侏儒之舞）》类特殊符号歌曲）
+  const simplifiedKeyword = cleanKeyword
+    .replace(/^[\(\（\[\【\s…\.]+|[\)\）\]\】\s…\.]+$/g, "")
+    .trim();
+  if (
+    simplifiedKeyword &&
+    simplifiedKeyword !== cleanKeyword &&
+    !searchKeywords.includes(simplifiedKeyword)
+  ) {
+    searchKeywords.push(simplifiedKeyword);
+  }
+
   // 2. 若关键词命中了自定义别名映射（如 "五月天" -> "Mayday"），自动追加衍生词并发搜索
   const currentKeywords = [...searchKeywords];
   for (const kw of currentKeywords) {
@@ -711,7 +740,7 @@ splayer.on("musicSearch", async ({ keyword }) => {
   const flatKeyword = normalize(cleanKeyword || keyword);
 
   // 同一 catalog id 在各曲库是同一录音、仅曲名本地化不同；按 id 合并，
-  // 取「曲名恰为宿主关键词前缀」的那份，宿主的曲名门槛才过得去
+  // 取「曲名核心恰为宿主关键词前缀」的那份，宿主的曲名门槛才过得去
   const merged = new Map();
   for (const item of all) {
     const kept = merged.get(item.id);
@@ -720,8 +749,8 @@ splayer.on("musicSearch", async ({ keyword }) => {
       continue;
     }
     kept.inAccount = kept.inAccount || item.storefront === accountStorefront;
-    const keptMatches = flatKeyword.startsWith(normalize(kept.name));
-    if (!keptMatches && flatKeyword.startsWith(normalize(item.name))) {
+    const keptMatches = flatKeyword.startsWith(normalize(stripFeat(kept.name)));
+    if (!keptMatches && flatKeyword.startsWith(normalize(stripFeat(item.name)))) {
       kept.name = item.name;
       kept.singer = item.singer;
       kept.album = item.album;
@@ -752,8 +781,17 @@ splayer.on("musicSearch", async ({ keyword }) => {
       }
     }
 
-    const alias = deriveArtistAlias(keyword, item.name, level.alias);
+    // 自动提取曲名中的 feat / with 伴唱歌手，合并进 candidate.singer，
+    // 解决 Apple 将 feat 写在歌名中导致宿主按合作歌手匹配失败的问题
+    const featArtists = extractFeatArtists(item.name);
     let singer = item.singer;
+    for (const fa of featArtists) {
+      if (!singer.split(/[\/,;&、，]+/).some((s) => normalize(s) === normalize(fa))) {
+        singer = `${singer}/${fa}`;
+      }
+    }
+
+    const alias = deriveArtistAlias(keyword, item.name, level.alias);
     if (alias) {
       singer = `${singer}/${alias}`;
     }
@@ -779,10 +817,12 @@ splayer.on("musicSearch", async ({ keyword }) => {
     if (cleanCand && (cleanKw.startsWith(cleanCand) || cleanCand.startsWith(cleanKw))) {
       const featMatches = keyword.match(FEAT_PATTERN);
       if (featMatches && featMatches[0]) {
+        // 宿主关键词中显式带有 feat 标记，精确截取到 feat 标记结束
         const featIdx = keyword.indexOf(featMatches[0]);
         name = keyword.slice(0, featIdx + featMatches[0].length).trim();
       } else {
-        // 无 feat 时，循环从关键词末尾剥离所有匹配的歌手，保留与宿主完全一致的歌名原文字符
+        // 宿主关键词中未带 feat（例如歌名是纯标题，合作歌手全放在 artist 字段传过来），
+        // 循环从关键词末尾剥离所有匹配的歌手（含主唱与提取出的伴唱）
         let rawTitle = keyword.trim();
         const artistParts = singer.split(/[\/,;&、，]+/).map((a) => a.trim()).filter(Boolean);
         let changed = true;
@@ -795,7 +835,12 @@ splayer.on("musicSearch", async ({ keyword }) => {
             }
           }
         }
-        if (rawTitle) name = rawTitle;
+        // 剥离完歌手后，若剩余标题的核心词依然与候选一致，则采用宿主原生标题格式；否则使用剥离 feat 后的候选曲名
+        if (rawTitle && normalize(rawTitle) === cleanCand) {
+          name = rawTitle;
+        } else {
+          name = stripFeat(item.name);
+        }
       }
     }
 
