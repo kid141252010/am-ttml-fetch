@@ -1,14 +1,14 @@
 /**
  * @name        AM TTML Fetch
  * @id          1412.am-ttml-fetch
- * @version     1.0.2
+ * @version     1.0.3
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译）
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @grant       network
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   新增「同 ISRC 孪生单曲逐字自愈回退」与「Single 版优先排序」：当专辑版仅有逐行歌词时，自动拉取并无缝升级为单曲版（Single）的原生 TTML 逐字歌词
+ * @changelog   优化 QQ 音乐等平台传入歌名及专辑名中 (Explicit) / (Clean) 字段的剔除与精准对齐，显著提升搜索召回率与满分匹配率
  */
 
 /* ========================= 常规默认配置 =========================
@@ -402,8 +402,19 @@ const normalize = (text) =>
 const FEAT_PATTERN =
   /(?:[\(\（\[\【]\s*(?:feat|ft|featuring|with)\b[^\)\）\]\】]*[\)\）\]\】]|(?:\s+|^)(?:feat|ft|featuring|with)\b\.?\s*[^\s\(\[\{]+)/gi;
 
+/** Explicit / Clean 标记正则：支持各类半角/全角括号、方括号及连字符后缀（如 (Explicit), (Clean), [Explicit Version] 等） */
+const EXPLICIT_CLEAN_PATTERN =
+  /(?:[\(\（\[\【\{]\s*(?:explicit|clean)(?:\s+(?:version|edit|edition))?\s*[\)\）\]\】\}]|\s*-\s*(?:explicit|clean)(?:\s+(?:version|edit|edition))?(?=\s*[\(\（\[\【]|$))/gi;
+
 /** 剥离曲名或关键词中的 feat / with 等伴唱后缀 */
 const stripFeat = (text) => String(text ?? "").replace(FEAT_PATTERN, "").trim();
+
+/** 剔除曲名、专辑名或关键词中的 (Explicit) / (Clean) 等修饰字段 */
+const stripExplicitClean = (text) =>
+  String(text ?? "")
+    .replace(EXPLICIT_CLEAN_PATTERN, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 
 /** 从曲名或文本中提取 feat / with 里的合作伴唱歌手名列表 */
 const extractFeatArtists = (text) => {
@@ -433,9 +444,9 @@ const extractFeatArtists = (text) => {
  */
 const deriveArtistAlias = (keyword, candidateName, mode) => {
   if (mode === "off") return "";
-  const cleanKw = stripFeat(keyword);
+  const cleanKw = stripFeat(stripExplicitClean(keyword));
   const flatKeyword = normalize(cleanKw);
-  const flatName = normalize(stripFeat(candidateName));
+  const flatName = normalize(stripFeat(stripExplicitClean(candidateName)));
   if (!flatName) return "";
 
   if (flatKeyword.startsWith(flatName)) {
@@ -469,9 +480,9 @@ const searchStorefront = async (storefront, keyword, mediaUserToken) => {
     if (!attrs.hasLyrics) continue;
     list.push({
       id: String(item.id),
-      name: attrs.name ?? "",
+      name: stripExplicitClean(attrs.name ?? ""),
       singer: attrs.artistName ?? "",
-      album: attrs.albumName ?? "",
+      album: stripExplicitClean(attrs.albumName ?? ""),
       durationMs: attrs.durationInMillis,
       releaseDate: attrs.releaseDate ?? "",
       storefront,
@@ -690,20 +701,33 @@ splayer.on("musicSearch", async ({ keyword }) => {
   const storefronts = getSearchStorefronts(accountStorefront);
   const aliasEntries = getCustomAliasEntries();
 
-  // 1. 基础词与剥离 feat 伴唱后的派生词
-  const searchKeywords = [keyword];
+  // 1. 优先提取剔除 (Explicit) / (Clean) 的纯净关键词（大幅提高 Apple Music 官方检索召回率）
+  const cleanExplicitKw = stripExplicitClean(keyword);
+  const searchKeywords = [];
+  if (cleanExplicitKw && cleanExplicitKw !== keyword) {
+    searchKeywords.push(cleanExplicitKw);
+    const cleanFeatAndExplicit = stripFeat(cleanExplicitKw);
+    if (cleanFeatAndExplicit && !searchKeywords.includes(cleanFeatAndExplicit)) {
+      searchKeywords.push(cleanFeatAndExplicit);
+    }
+  }
+
+  // 1.1 基础原始词与剥离 feat 伴唱后的派生词
+  if (!searchKeywords.includes(keyword)) {
+    searchKeywords.push(keyword);
+  }
   const cleanKeyword = stripFeat(keyword);
-  if (cleanKeyword && cleanKeyword !== keyword && !searchKeywords.includes(cleanKeyword)) {
+  if (cleanKeyword && !searchKeywords.includes(cleanKeyword)) {
     searchKeywords.push(cleanKeyword);
   }
 
-  // 1.1 进一步剥离省略号及外层括号的精简搜索词（应对《（……侏儒之舞）》类特殊符号歌曲）
-  const simplifiedKeyword = cleanKeyword
+  // 1.2 进一步剥离省略号及外层括号的精简搜索词（应对《（……侏儒之舞）》类特殊符号歌曲）
+  const baseForSimplified = cleanExplicitKw || cleanKeyword || keyword;
+  const simplifiedKeyword = stripFeat(baseForSimplified)
     .replace(/^[\(\（\[\【\s…\.]+|[\)\）\]\】\s…\.]+$/g, "")
     .trim();
   if (
     simplifiedKeyword &&
-    simplifiedKeyword !== cleanKeyword &&
     !searchKeywords.includes(simplifiedKeyword)
   ) {
     searchKeywords.push(simplifiedKeyword);
@@ -738,7 +762,7 @@ splayer.on("musicSearch", async ({ keyword }) => {
   const groups = await Promise.all(searchTasks);
   const all = groups.flat();
   const accountItems = all.filter((item) => item.storefront === accountStorefront);
-  const flatKeyword = normalize(cleanKeyword || keyword);
+  const flatKeyword = normalize(stripExplicitClean(cleanKeyword || keyword));
 
   // 同一 catalog id 在各曲库是同一录音、仅曲名本地化不同；按 id 合并，
   // 取「曲名核心恰为宿主关键词前缀」的那份，宿主的曲名门槛才过得去
@@ -750,8 +774,13 @@ splayer.on("musicSearch", async ({ keyword }) => {
       continue;
     }
     kept.inAccount = kept.inAccount || item.storefront === accountStorefront;
-    const keptMatches = flatKeyword.startsWith(normalize(stripFeat(kept.name)));
-    if (!keptMatches && flatKeyword.startsWith(normalize(stripFeat(item.name)))) {
+    const keptMatches = flatKeyword.startsWith(
+      normalize(stripExplicitClean(stripFeat(kept.name))),
+    );
+    if (
+      !keptMatches &&
+      flatKeyword.startsWith(normalize(stripExplicitClean(stripFeat(item.name))))
+    ) {
       kept.name = item.name;
       kept.singer = item.singer;
       kept.album = item.album;
@@ -810,42 +839,43 @@ splayer.on("musicSearch", async ({ keyword }) => {
     }
 
     // 智能曲名对齐：当候选的核心歌名与关键词的核心歌名吻合时，
-    // 精准将候选名称对齐为搜索关键词中的曲名格式（完全保持与宿主一致的全角括号、feat 等标点写法），
-    // 彻底解决宿主由于未过滤全角括号（）和中括号[]导致比对失败的致命问题！
+    // 精准将候选名称对齐为搜索关键词中的曲名格式（完全保持与宿主一致的全角括号、feat、(Explicit)/(Clean) 等标点写法），
+    // 彻底解决宿主由于未过滤全角括号（）、中括号[]以及 Explicit/Clean 导致比对失败的致命问题！
     let name = item.name;
-    const cleanCand = normalize(stripFeat(item.name));
-    const cleanKw = normalize(stripFeat(keyword));
+    const cleanCand = normalize(stripExplicitClean(stripFeat(item.name)));
+    const cleanKw = normalize(stripExplicitClean(stripFeat(keyword)));
     if (cleanCand && (cleanKw.startsWith(cleanCand) || cleanCand.startsWith(cleanKw))) {
-      const featMatches = keyword.match(FEAT_PATTERN);
-      if (featMatches && featMatches[0]) {
-        // 宿主关键词中显式带有 feat 标记，精确截取到 feat 标记结束
-        const featIdx = keyword.indexOf(featMatches[0]);
-        name = keyword.slice(0, featIdx + featMatches[0].length).trim();
-      } else {
-        // 宿主关键词中未带 feat（例如歌名是纯标题，合作歌手全放在 artist 字段传过来），
-        // 循环从关键词末尾剥离所有匹配的歌手（含主唱与提取出的伴唱）
-        let rawTitle = keyword.trim();
-        const artistParts = singer.split(/[\/,;&、，]+/).map((a) => a.trim()).filter(Boolean);
-        let changed = true;
-        while (changed) {
-          changed = false;
-          for (const artist of artistParts) {
-            if (rawTitle.toLowerCase().endsWith(artist.toLowerCase())) {
-              rawTitle = rawTitle.slice(0, -artist.length).trim();
-              changed = true;
-            }
+      // 循环从关键词末尾剥离所有匹配的歌手（含主唱与提取出的伴唱）
+      let rawTitle = keyword.trim();
+      const artistParts = singer.split(/[\/,;&、，]+/).map((a) => a.trim()).filter(Boolean);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const artist of artistParts) {
+          if (rawTitle.toLowerCase().endsWith(artist.toLowerCase())) {
+            rawTitle = rawTitle.slice(0, -artist.length).trim();
+            changed = true;
           }
         }
-        // 剥离完歌手后，若剩余标题的核心词依然与候选一致，则采用宿主原生标题格式；否则使用剥离 feat 后的候选曲名
-        if (rawTitle && normalize(rawTitle) === cleanCand) {
-          name = rawTitle;
+      }
+      // 剥离完歌手后，若剩余标题的核心词（剔除 Explicit/Clean 与 feat）依然与候选一致，
+      // 则采用宿主原生标题格式（完美保留宿主可能携带的 (Explicit) / (Clean) 等修饰以达成宿主端 nameExact 满分匹配）；
+      // 否则若宿主关键词显式带有 feat 标记，精确截取到 feat 标记结束；最后退回纯净曲名
+      const normRaw = normalize(stripExplicitClean(stripFeat(rawTitle)));
+      if (rawTitle && normRaw === cleanCand) {
+        name = rawTitle;
+      } else {
+        const featMatches = keyword.match(FEAT_PATTERN);
+        if (featMatches && featMatches[0]) {
+          const featIdx = keyword.indexOf(featMatches[0]);
+          name = keyword.slice(0, featIdx + featMatches[0].length).trim();
         } else {
-          name = stripFeat(item.name);
+          name = stripExplicitClean(stripFeat(item.name));
         }
       }
     }
 
-    list.push({ ...item, name, singer });
+    list.push({ ...item, name, singer, album: stripExplicitClean(item.album) });
   }
 
   // 关键排序：
