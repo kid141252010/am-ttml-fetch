@@ -1,14 +1,14 @@
 /**
  * @name        AM TTML Fetch
  * @id          1412.am-ttml-fetch
- * @version     1.0.3
+ * @version     1.0.4
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译）
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @grant       network
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   优化 QQ 音乐等平台传入歌名及专辑名中 (Explicit) / (Clean) 字段的剔除与精准对齐，显著提升搜索召回率与满分匹配率
+ * @changelog   支持 Apple Music 平台音源直接根据传入的歌曲 ID 请求逐字歌词，免除冗余检索与跨区探测
  */
 
 /* ========================= 常规默认配置 =========================
@@ -904,12 +904,87 @@ splayer.on("musicSearch", async ({ keyword }) => {
 });
 
 /**
+ * 从宿主传入的元数据提取 Apple Music 歌曲 ID (Adam ID)
+ * @param {object} musicInfo - 歌曲元数据
+ * @returns {string} 提取到的歌曲 ID
+ */
+const extractSongId = (musicInfo) => {
+  if (!musicInfo) return "";
+  const candidates = [
+    musicInfo.id,
+    musicInfo.songmid,
+    musicInfo.songId,
+    musicInfo.meta?.songId,
+  ];
+  for (const raw of candidates) {
+    if (raw === undefined || raw === null) continue;
+    const str = String(raw).trim();
+    if (!str) continue;
+    // 纯数字 Adam ID（如 1468058171）
+    if (/^\d{5,14}$/.test(str)) {
+      return str;
+    }
+    // 带有平台前缀（如 am:1468058171, apple_1468058171 等）
+    const prefixMatch = str.match(/(?:am|apple)[_:\-\/](\d{5,14})/i);
+    if (prefixMatch) {
+      return prefixMatch[1];
+    }
+    // Web 链接（如 /song/1468058171 或 ?i=1468058171）
+    const urlMatch = str.match(/(?:\/song\/(?:[^\/]+\/)?|\?i=)(\d{5,14})/i);
+    if (urlMatch) {
+      return urlMatch[1];
+    }
+    return str;
+  }
+  return "";
+};
+
+/**
+ * 判断当前请求是否来自 Apple Music (AM) 平台音源
+ * @param {object} musicInfo - 歌曲元数据对象
+ * @param {string} [reqSource] - 插件请求源 key
+ * @returns {boolean} 是否为 Apple Music 平台音源
+ */
+const isAMPlatform = (musicInfo, reqSource) => {
+  if (!musicInfo) return false;
+  const platform = String(musicInfo.platform || "").toLowerCase();
+  const infoSource = String(musicInfo.source || "").toLowerCase();
+  const metaSource = String(musicInfo.meta?.source || "").toLowerCase();
+  const metaPlatform = String(musicInfo.meta?.platform || "").toLowerCase();
+
+  if (
+    platform === "applemusic" ||
+    platform === "am" ||
+    infoSource === "applemusic" ||
+    infoSource === "am" ||
+    metaSource === "applemusic" ||
+    metaSource === "am" ||
+    metaPlatform === "applemusic" ||
+    metaPlatform === "am"
+  ) {
+    return true;
+  }
+
+  // 宿主直接透传直连（未经过插件内部 musicSearch，因此无 storefront 和 inAccount 标记）
+  if (
+    musicInfo.storefront === undefined &&
+    musicInfo.inAccount === undefined &&
+    Boolean(musicInfo.id || musicInfo.songmid || musicInfo.songId)
+  ) {
+    return true;
+  }
+
+  return false;
+};
+
+/**
  * 定位候选在账号曲库里的歌曲 id
  * 歌词只存在于账号所属曲库，原文库搜到的 id 直接取词多半 404
- * 顺序：搜索阶段认领的同录音 id → 缓存映射 → ISRC 直接反查 → 降级直接探测
+ * 顺序：AM平台音源直接返回ID → 搜索阶段认领的同录音 id → 缓存映射 → ISRC 直接反查 → 降级直接探测
  * @returns 账号曲库内的歌曲 id，定位不到返回 null
  */
 const resolveAccountSongId = async (musicInfo, accountStorefront, mediaUserToken) => {
+  if (isAMPlatform(musicInfo)) return extractSongId(musicInfo);
   if (musicInfo.inAccount || musicInfo.storefront === accountStorefront) return musicInfo.id;
   if (musicInfo.accountId) return String(musicInfo.accountId);
 
@@ -1096,11 +1171,23 @@ const buildLyricQuery = (lang, script) => {
   return `?${query.join("&")}`;
 };
 
-splayer.on("musicLyric", async ({ musicInfo }) => {
+splayer.on("musicLyric", async (req) => {
+  const musicInfo = req?.musicInfo || req || {};
+  const reqSource = req?.source;
+
   const mediaUserToken = requireMediaUserToken();
   const accountStorefront = await getAccountStorefront(mediaUserToken);
 
-  const songId = await resolveAccountSongId(musicInfo, accountStorefront, mediaUserToken);
+  const isAM = isAMPlatform(musicInfo, reqSource);
+  let songId = null;
+
+  if (isAM) {
+    songId = extractSongId(musicInfo);
+    splayer.log.info(`[AM平台音源] 直接根据传入 ID 请求逐字歌词 id=${songId}`);
+  } else {
+    songId = await resolveAccountSongId(musicInfo, accountStorefront, mediaUserToken);
+  }
+
   if (!songId) {
     splayer.log.warn(`候选不在账号曲库内，跳过 id=${musicInfo.id} sf=${musicInfo.storefront}`);
     return { lyric: "" };
@@ -1109,7 +1196,7 @@ splayer.on("musicLyric", async ({ musicInfo }) => {
   const lang = getSettingOrConst("translationLang", TRANSLATION_LANG);
   const script = getSettingOrConst("translationScript", TRANSLATION_SCRIPT);
   const acceptLineLyrics = getBooleanSetting("acceptLineLyrics", ACCEPT_LINE_LYRICS);
-  const cacheKey = `lyric:${accountStorefront}:${songId}:${lang}:${script}`;
+  let cacheKey = `lyric:${accountStorefront}:${songId}:${lang}:${script}`;
   const cached = await splayer.storage.get(cacheKey);
   if (cached) {
     if (cached === NO_LYRIC_MARKER) {
@@ -1136,10 +1223,45 @@ splayer.on("musicLyric", async ({ musicInfo }) => {
   // 仅请求逐字歌词接口；不请求/降级到纯逐行的 /lyrics 接口
   const suffix = buildLyricQuery(lang, script);
   const base = `/catalog/${accountStorefront}/songs/${songId}`;
-  const resp = await ampRequestWithRetry(`${base}/syllable-lyrics${suffix}`, mediaUserToken);
+  let resp = await ampRequestWithRetry(`${base}/syllable-lyrics${suffix}`, mediaUserToken);
   if (resp.status === 403) {
     throw new Error("Media-User-Token 无效或已过期，请在插件设置里重新填写");
   }
+
+  // 若为 AM 平台音源直接根据传入 ID 请求，但在当前账号曲库遭遇 404（例如外区曲目的 ID），
+  // 且元数据中附带了 ISRC 时，自动通过 ISRC 尝试自愈匹配账号曲库对应版本
+  if (resp.status === 404 && isAM && musicInfo.isrc) {
+    try {
+      const isrcPath = `/catalog/${accountStorefront}/songs?filter%5Bisrc%5D=${encodeURIComponent(musicInfo.isrc)}`;
+      const isrcResp = await ampRequestWithRetry(isrcPath, mediaUserToken, 3500);
+      if (isrcResp.status === 200) {
+        const matches = (isrcResp.body?.data ?? []).filter(
+          (item) =>
+            !musicInfo.durationMs ||
+            sameRecording(item.attributes?.durationInMillis, musicInfo.durationMs),
+        );
+        const best =
+          matches.find((item) => item.attributes?.hasTimeSyncedLyrics) ??
+          matches.find((item) => item.attributes?.hasLyrics) ??
+          matches[0];
+        if (best && String(best.id) !== songId) {
+          const healedId = String(best.id);
+          splayer.log.info(
+            `[AM平台音源] 传入 ID 跨区 404，通过 ISRC (${musicInfo.isrc}) 自愈切换至账号库 ID ${healedId}`,
+          );
+          songId = healedId;
+          cacheKey = `lyric:${accountStorefront}:${songId}:${lang}:${script}`;
+          resp = await ampRequestWithRetry(
+            `/catalog/${accountStorefront}/songs/${songId}/syllable-lyrics${suffix}`,
+            mediaUserToken,
+          );
+        }
+      }
+    } catch (e) {
+      splayer.log.warn(`[AM平台音源] 跨区自愈探测失败: ${e?.message}`);
+    }
+  }
+
   if (resp.status !== 200) {
     splayer.log.warn(`歌词请求失败 HTTP ${resp.status} id=${songId} sf=${accountStorefront}`);
     if (resp.status === 404) {
