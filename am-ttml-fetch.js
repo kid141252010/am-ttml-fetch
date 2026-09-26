@@ -1,14 +1,14 @@
 /**
  * @name        AM TTML Fetch
  * @id          1412.am-ttml-fetch
- * @version     1.0.4
+ * @version     1.0.5
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译）
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @grant       network
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   支持 Apple Music 平台音源直接根据传入的歌曲 ID 请求逐字歌词，免除冗余检索与跨区探测
+ * @changelog   新增对单曲/EP结尾修饰（如 - Single, – Single, - EP, (Single), (EP) 等）的智能剥离与满分匹配对齐，同时内嵌单曲版高优先排序特征
  */
 
 /* ========================= 常规默认配置 =========================
@@ -404,17 +404,26 @@ const FEAT_PATTERN =
 
 /** Explicit / Clean 标记正则：支持各类半角/全角括号、方括号及连字符后缀（如 (Explicit), (Clean), [Explicit Version] 等） */
 const EXPLICIT_CLEAN_PATTERN =
-  /(?:[\(\（\[\【\{]\s*(?:explicit|clean)(?:\s+(?:version|edit|edition))?\s*[\)\）\]\】\}]|\s*-\s*(?:explicit|clean)(?:\s+(?:version|edit|edition))?(?=\s*[\(\（\[\【]|$))/gi;
+  /(?:[\(\（\[\【\{]\s*(?:explicit|clean)(?:\s+(?:version|edit|edition))?\s*[\)\）\]\】\}]|\s*[-–—－]\s*(?:explicit|clean)(?:\s+(?:version|edit|edition))?(?=\s*[\(\（\[\【]|$))/gi;
+
+/** Single / EP 后缀正则：支持各类连字符（-、–、—、－）以及括号（半角/全角括号、方括号）修饰的 Single、EP、单曲标记 */
+const SINGLE_EP_PATTERN =
+  /(?:\s*[-–—－]\s*(?:single|ep|单曲)|\s*[\(\（\[\【\{]\s*(?:single|ep|单曲)\s*[\)\）\]\】\}])(?=\s*[\(\（\[\【\{]|\s*$)/gi;
 
 /** 剥离曲名或关键词中的 feat / with 等伴唱后缀 */
 const stripFeat = (text) => String(text ?? "").replace(FEAT_PATTERN, "").trim();
 
-/** 剔除曲名、专辑名或关键词中的 (Explicit) / (Clean) 等修饰字段 */
-const stripExplicitClean = (text) =>
+/** 剔除曲名、专辑名或关键词中的 (Explicit) / (Clean) 以及 - Single / - EP 等修饰字段 */
+const stripDecorators = (text) =>
   String(text ?? "")
+    .replace(EXPLICIT_CLEAN_PATTERN, "")
+    .replace(SINGLE_EP_PATTERN, "")
     .replace(EXPLICIT_CLEAN_PATTERN, "")
     .replace(/\s{2,}/g, " ")
     .trim();
+
+/** 兼容保留原函数名，统一调用全量修饰字段清洗 */
+const stripExplicitClean = stripDecorators;
 
 /** 从曲名或文本中提取 feat / with 里的合作伴唱歌手名列表 */
 const extractFeatArtists = (text) => {
@@ -478,16 +487,20 @@ const searchStorefront = async (storefront, keyword, mediaUserToken) => {
   for (const item of resp.body?.results?.songs?.data ?? []) {
     const attrs = item.attributes ?? {};
     if (!attrs.hasLyrics) continue;
+    const rawName = attrs.name ?? "";
+    const rawAlbum = attrs.albumName ?? "";
+    const isSingle = /single|单曲|ep/i.test(rawName) || /single|单曲|ep/i.test(rawAlbum);
     list.push({
       id: String(item.id),
-      name: stripExplicitClean(attrs.name ?? ""),
+      name: stripExplicitClean(rawName),
       singer: attrs.artistName ?? "",
-      album: stripExplicitClean(attrs.albumName ?? ""),
+      album: stripExplicitClean(rawAlbum),
       durationMs: attrs.durationInMillis,
       releaseDate: attrs.releaseDate ?? "",
       storefront,
       isrc: attrs.isrc ?? "",
       hasTimeSyncedLyrics: Boolean(attrs.hasTimeSyncedLyrics),
+      isSingle,
     });
   }
   return list;
@@ -774,6 +787,7 @@ splayer.on("musicSearch", async ({ keyword }) => {
       continue;
     }
     kept.inAccount = kept.inAccount || item.storefront === accountStorefront;
+    kept.isSingle = kept.isSingle || item.isSingle;
     const keptMatches = flatKeyword.startsWith(
       normalize(stripExplicitClean(stripFeat(kept.name))),
     );
@@ -892,8 +906,8 @@ splayer.on("musicSearch", async ({ keyword }) => {
     if (a.hasTimeSyncedLyrics !== b.hasTimeSyncedLyrics) {
       return b.hasTimeSyncedLyrics ? 1 : -1;
     }
-    const aSingle = /single|单曲|ep/i.test(a.album) || /single|单曲|ep/i.test(a.name);
-    const bSingle = /single|单曲|ep/i.test(b.album) || /single|单曲|ep/i.test(b.name);
+    const aSingle = Boolean(a.isSingle) || /single|单曲|ep/i.test(a.album) || /single|单曲|ep/i.test(a.name);
+    const bSingle = Boolean(b.isSingle) || /single|单曲|ep/i.test(b.album) || /single|单曲|ep/i.test(b.name);
     if (aSingle !== bSingle) {
       return aSingle ? -1 : 1;
     }
