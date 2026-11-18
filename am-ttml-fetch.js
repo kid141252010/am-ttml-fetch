@@ -1087,78 +1087,6 @@ const isSyllableTTML = (ttml) => {
   return /<span\b[^>]*\b(begin|end)\s*=/i.test(ttml);
 };
 
-/**
- * 预处理 TTML：将 Apple Music 的简体替换段 (translation type="replacement") 融合进主歌词中，
- * 严格保留背景歌词 (ttm:role="x-bg") 与逐字时间戳，清理冗余 xmlns 并更新根节点语言声明为 zh-Hans。
- *
- * @param {string} ttml - 原始 TTML 字符串
- * @returns {string} 处理后的 TTML 字符串
- */
-const applyReplacementTranslations = (ttml) => {
-  if (!ttml || typeof ttml !== "string") return ttml;
-
-  // 1. 查找 replacement 类型的 translation 块（通常为 zh-Hans）
-  const replacementRegex =
-    /<translation\b[^>]*\btype=["']replacement["'][^>]*>([\s\S]*?)<\/translation>/i;
-  const match = ttml.match(replacementRegex);
-  if (!match) {
-    return ttml;
-  }
-
-  const transTag = match[0];
-  const replacementContent = match[1];
-
-  // 解析替换段的语言声明（如 zh-Hans）
-  const transLangMatch = transTag.match(/\bxml:lang=["']([^"']+)["']/i);
-  const targetLang = transLangMatch ? transLangMatch[1] : "zh-Hans";
-
-  // 2. 提取所有 <text for="KEY">CONTENT</text>，建立 key -> cleanContent 映射表
-  const textRegex = /<text\b[^>]*\bfor=["']([^"']+)["'][^>]*>([\s\S]*?)<\/text>/gi;
-  const replacementMap = new Map();
-
-  let textMatch;
-  while ((textMatch = textRegex.exec(replacementContent)) !== null) {
-    const key = textMatch[1];
-    let content = textMatch[2];
-
-    // 清理 span 标签上冗余的 xmlns / xmlns:ttm / xmlns:itunes 属性，
-    // 严格保留 ttm:role="x-bg"、begin、end 等业务属性与层级结构
-    content = content.replace(/\s+xmlns(?::\w+)?=["'][^"']+["']/g, "");
-
-    replacementMap.set(key, content);
-  }
-
-  if (replacementMap.size === 0) {
-    return ttml;
-  }
-
-  // 3. 将主歌词中对应 <p itunes:key="KEY"> 的内部歌词替换为简体内容
-  // 保留 <p> 标签自身的所有属性（begin, end, itunes:key, ttm:agent, ttm:role 等）
-  let processedTtml = ttml.replace(
-    /(<p\b([^>]*\bitunes:key=["']([^"']+)["'][^>]*)>)([\s\S]*?)(<\/p>)/gi,
-    (fullMatch, openTag, attrs, key, originalContent, closeTag) => {
-      const repContent = replacementMap.get(key);
-      if (repContent !== undefined) {
-        return `${openTag}${repContent}${closeTag}`;
-      }
-      return fullMatch;
-    },
-  );
-
-  // 4. 移除已经应用融合的 <translation type="replacement"> 块
-  processedTtml = processedTtml.replace(replacementRegex, "");
-
-  // 若 <translations> 内部仅有空白字符，则移除空的 <translations></translations> 标签
-  processedTtml = processedTtml.replace(/<translations>\s*<\/translations>/gi, "");
-
-  // 5. 更新根节点 <tt> 的 xml:lang 声明为目标语言（如 zh-Hans）
-  processedTtml = processedTtml.replace(
-    /(<tt\b[^>]*\bxml:lang=["'])[^"']+([^>]*>)/i,
-    `$1${targetLang}$2`,
-  );
-
-  return processedTtml;
-};
 
 /** 写入歌词缓存，按写入顺序淘汰最旧条目 */
 const cacheLyric = async (key, ttml) => {
@@ -1296,8 +1224,6 @@ splayer.on("musicLyric", async (req) => {
     return { lyric: "" };
   }
 
-  // 预处理：将 Apple Music 简体替换段 (translation type="replacement") 融合进主歌词
-  ttml = applyReplacementTranslations(ttml);
 
   // 判定是否为普通逐行歌词（displayType 为 2 或内容无逐字 span 时间戳）
   let isLineLyric =
@@ -1329,9 +1255,8 @@ splayer.on("musicLyric", async (req) => {
             3500,
           );
           if (twinResp.status === 200) {
-            let twinTtml = pickTTML(twinResp.body);
+            const twinTtml = pickTTML(twinResp.body);
             if (twinTtml && twinTtml.trim()) {
-              twinTtml = applyReplacementTranslations(twinTtml);
               if (isSyllableTTML(twinTtml)) {
                 splayer.log.info(
                   `成功从孪生版本 id=${twinId} (${twin.attributes?.albumName}) 获取到逐字歌词，自愈替换原逐行版本 id=${songId}`,
