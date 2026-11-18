@@ -1,14 +1,14 @@
 /**
  * @name        AM TTML Fetch
  * @id          1412.am-ttml-fetch
- * @version     1.0.5
+ * @version     1.0.6
  * @description 搜索 Apple Music 并获取 TTML 逐字歌词（含翻译 / 音译）
  * @author      1412
  * @type        source
  * @apiLevel    1
  * @grant       network
  * @updateUrl   https://raw.githubusercontent.com/kid141252010/am-ttml-fetch/main/am-ttml-fetch.js
- * @changelog   新增对单曲/EP结尾修饰（如 - Single, – Single, - EP, (Single), (EP) 等）的智能剥离与满分匹配对齐，同时内嵌单曲版高优先排序特征
+ * @changelog   移除 TTML 简繁替换处理，直接保留 Apple Music 原始歌词内容
  */
 
 /* ========================= 常规默认配置 =========================
